@@ -1,0 +1,157 @@
+name: dezr
+
+services:
+  db:
+    # PostgreSQL with pgvector, for the document passages' vectors (migration 0002).
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dezr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-dezr}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      # Exposed on the host for local tools (psql, DBeaver). Remove in production.
+      - "${POSTGRES_HOST_PORT:-5435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: dezr-api:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dezr}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dezr}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      TRUSTED_PROXY_COUNT: ${TRUSTED_PROXY_COUNT:-0}
+      ADMIN_SESSION_HOURS: ${ADMIN_SESSION_HOURS:-8}
+      # Created on first start when no admin exists. Leave the password empty to have one
+      # generated and printed once (docker compose logs api); an empty email turns it off.
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL-admin@deszr.com}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      CONTACT_RATE_LIMIT_PER_HOUR: ${CONTACT_RATE_LIMIT_PER_HOUR:-5}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-/media}
+      # Documents for the AI assistant: the API stores uploads, the worker below processes them.
+      INGESTION_MODE: worker
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-bedrock}
+      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      EMBEDDING_REGION: ${EMBEDDING_REGION:-ap-southeast-1}
+      # Bearer key for POST /api/v1/documents/search (dezr-ai's retrieval); empty turns it off.
+      DOCUMENT_SEARCH_API_KEY: ${DOCUMENT_SEARCH_API_KEY:-}
+      # The AI assistant: POST /api/v1/ai/messages[/stream] relay to dezr-ai. The AgentCore
+      # runtime when its ARN is set, else AI_AGENT_URL (dezr-ai's main.py on the host:
+      # http://host.docker.internal:8080/invocations). With neither, those endpoints answer 503.
+      AI_AGENT_RUNTIME_ARN: ${AI_AGENT_RUNTIME_ARN:-}
+      AI_AGENT_REGION: ${AI_AGENT_REGION:-ap-southeast-1}
+      AI_AGENT_URL: ${AI_AGENT_URL:-}
+      AI_AGENT_TOKEN: ${AI_AGENT_TOKEN:-}
+      AI_AGENT_TIMEOUT_SECONDS: ${AI_AGENT_TIMEOUT_SECONDS:-120}
+      # Bearer key dezr-ui's server sends (NUXT_CHAT_API_TOKEN); empty leaves the chat open.
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_RATE_LIMIT_PER_MINUTE: ${AI_RATE_LIMIT_PER_MINUTE:-10}
+      AI_DAILY_MESSAGE_LIMIT: ${AI_DAILY_MESSAGE_LIMIT:-1000}
+      # Media and document storage (see .env.example).
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-ap-southeast-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_KEY_PREFIX: ${S3_KEY_PREFIX:-dezr}
+      S3_SERVER_SIDE_ENCRYPTION: ${S3_SERVER_SIDE_ENCRYPTION-AES256}
+      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+      # Passed through only when set in .env or the shell. Leave them unset on AWS
+      # (ECS task role / EC2 instance profile) so boto3 uses the role instead.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+    volumes:
+      # Only used when STORAGE_BACKEND=local.
+      - uploads:/data/uploads
+    ports:
+      # 8001 on the host: vendor-portal-api (dezr-ui's chat backend) usually has 8000.
+      - "${API_HOST_PORT:-8001}:8000"
+    extra_hosts:
+      # Lets AI_AGENT_URL reach dezr-ai running on the host rather than in a container.
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Parses, chunks and embeds uploaded documents (same image, no web server). Run more than
+  # one to process several documents at once; each document is claimed by one worker only.
+  worker:
+    image: dezr-api:latest
+    depends_on:
+      # Healthy means the API has applied the migrations the worker needs.
+      api:
+        condition: service_healthy
+    command: ["flask", "documents", "worker"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dezr}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-dezr}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      # The API container migrates and seeds; the worker only processes.
+      RUN_MIGRATIONS: "0"
+      SEED_CONTENT: "0"
+      CREATE_DEFAULT_ADMIN: "0"
+      INGESTION_MODE: worker
+      INGESTION_POLL_SECONDS: ${INGESTION_POLL_SECONDS:-5}
+      CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-400}
+      CHUNK_MIN_TOKENS: ${CHUNK_MIN_TOKENS:-60}
+      CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-50}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-bedrock}
+      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      EMBEDDING_REGION: ${EMBEDDING_REGION:-ap-southeast-1}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-ap-southeast-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
+      S3_KEY_PREFIX: ${S3_KEY_PREFIX:-dezr}
+      S3_SERVER_SIDE_ENCRYPTION: ${S3_SERVER_SIDE_ENCRYPTION-AES256}
+      S3_KMS_KEY_ID: ${S3_KMS_KEY_ID:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN}
+    volumes:
+      # Same files as the API when STORAGE_BACKEND=local.
+      - uploads:/data/uploads
+    # No HTTP server in this container; don't inherit the image's /healthz check.
+    healthcheck:
+      disable: true
+    stop_grace_period: 2m
+    restart: unless-stopped
+
+  # ---- Optional local S3 for development: `docker compose --profile local-s3 up` ----
+  s3:
+    profiles: ["local-s3"]
+    image: motoserver/moto:5.1.0
+    ports:
+      - "${S3_HOST_PORT:-5006}:5000"
+
+  s3-init:
+    profiles: ["local-s3"]
+    image: amazon/aws-cli:2.27.0
+    depends_on:
+      - s3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          aws --endpoint-url http://s3:5000 s3api head-bucket --bucket "$${BUCKET}" 2>/dev/null && exit 0
+          aws --endpoint-url http://s3:5000 s3api create-bucket --bucket "$${BUCKET}" \
+            --create-bucket-configuration LocationConstraint="$${AWS_DEFAULT_REGION}" && exit 0
+          sleep 1
+        done
+        exit 1
+    environment:
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      AWS_DEFAULT_REGION: ${S3_REGION:-ap-southeast-1}
+      BUCKET: ${S3_BUCKET:-dezr-media}
+
+volumes:
+  db-data:
+  uploads:

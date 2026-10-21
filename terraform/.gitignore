@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# Your settings (may hold an email, IPs); terraform.tfvars.example is the template.
+terraform.tfvars
+*.auto.tfvars
+# The zipped app bundle uploaded to S3.
+.build/

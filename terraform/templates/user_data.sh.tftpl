@@ -1,0 +1,19 @@
+#!/bin/bash
+# First boot: save the deployment settings and the deploy script, then run it.
+# Secrets are not in here; deploy.sh reads them from SSM Parameter Store.
+set -euo pipefail
+mkdir -p /opt/dezr
+chmod 700 /opt/dezr
+
+cat > /opt/dezr/deploy.env <<'DEPLOY_ENV'
+%{ for key, value in config ~}
+${key}='${replace(value, "'", "'\"'\"'")}'
+%{ endfor ~}
+DEPLOY_ENV
+
+cat > /opt/dezr/deploy.sh <<'DEPLOY_SCRIPT'
+${deploy_script}
+DEPLOY_SCRIPT
+chmod 700 /opt/dezr/deploy.sh
+
+/opt/dezr/deploy.sh 2>&1 | tee -a /var/log/dezr-deploy.log

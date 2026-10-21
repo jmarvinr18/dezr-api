@@ -1,0 +1,6 @@
+# Shell scripts run inside Linux containers and on the EC2 instance; a CRLF shebang
+# (a carriage return after "#!/bin/bash") fails with "required file not found". Keep everything they read LF too.
+*.sh text eol=lf
+*.tftpl text eol=lf
+Dockerfile text eol=lf
+docker-compose*.yml text eol=lf
