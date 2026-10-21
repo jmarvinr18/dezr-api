@@ -38,6 +38,17 @@ class DocumentValidator:
     def __init__(self, max_file_size: int = DOCUMENT_MAX_FILE_SIZE):
         self._max_file_size = max_file_size
 
+    @property
+    def max_file_size(self) -> int:
+        return self._max_file_size
+
+    def check_size(self, size: int) -> None:
+        """The size rule on its own, for a file the server hasn't received yet."""
+        if size <= 0:
+            raise ValidationFailed("The file is empty.", errors={"file": "The file is empty."})
+        if size > self._max_file_size:
+            raise PayloadTooLarge(f"Documents can be up to {self._max_file_size // (1024 * 1024)} MB.")
+
     def validate(self, incoming: IncomingFile | None) -> ValidatedDocument:
         if incoming is None or not incoming.filename:
             message = "Choose a document to upload in the 'file' field."
@@ -46,10 +57,7 @@ class DocumentValidator:
         # Browsers may send a full path; keep only the base name.
         name = incoming.filename.replace("\\", "/").rsplit("/", 1)[-1].strip()[:255] or "document"
         size = _stream_size(incoming.stream)
-        if size == 0:
-            raise ValidationFailed("The file is empty.", errors={"file": "The file is empty."})
-        if size > self._max_file_size:
-            raise PayloadTooLarge(f"Documents can be up to {self._max_file_size // (1024 * 1024)} MB.")
+        self.check_size(size)
 
         kind = self._kind(name, incoming.stream)
         incoming.stream.seek(0)

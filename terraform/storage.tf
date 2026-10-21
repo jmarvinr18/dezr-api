@@ -27,6 +27,41 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "main" {
   }
 }
 
+# Admin > Documents sends files straight here from the browser (a presigned POST the API signs),
+# so a large document never passes through dezr-ui's server. The bucket stays private: this only
+# lets those pages make the request.
+resource "aws_s3_bucket_cors_configuration" "main" {
+  count  = length(var.upload_origins) > 0 ? 1 : 0
+  bucket = aws_s3_bucket.main.id
+
+  cors_rule {
+    allowed_methods = ["POST"]
+    allowed_origins = var.upload_origins
+    allowed_headers = ["*"]
+    max_age_seconds = 3000
+  }
+}
+
+# A direct upload waits in incoming/ (the app's DOCUMENT_UPLOAD_PREFIX) until the API confirms it
+# and moves it to documents/. One that is never confirmed, e.g. the admin closed the page, goes
+# after a day.
+resource "aws_s3_bucket_lifecycle_configuration" "main" {
+  bucket = aws_s3_bucket.main.id
+
+  rule {
+    id     = "expire-unconfirmed-document-uploads"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.media_prefix}/incoming/"
+    }
+
+    expiration {
+      days = 1
+    }
+  }
+}
+
 # ---------- The app, as built on the instance ----------
 
 locals {

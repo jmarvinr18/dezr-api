@@ -46,6 +46,10 @@ DOCUMENT_KINDS = {
 }
 DOCUMENT_MAX_FILE_SIZE = 25 * 1024 * 1024
 DOCUMENT_TITLE_MAX_LENGTH = 200
+# Direct uploads (POST /admin/documents/uploads): how long the browser has to send the file to
+# S3, and where it waits until it is confirmed. terraform/storage.tf expires anything left there.
+DOCUMENT_UPLOAD_EXPIRES_SECONDS = 15 * 60
+DOCUMENT_UPLOAD_PREFIX = "incoming"
 # Vector size of the embedding column. Titan Text Embeddings V2 (at 1024) and Cohere Embed v3
 # both produce 1024; changing it needs a migration and re-embedding every document.
 EMBEDDING_DIMENSIONS = 1024

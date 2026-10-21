@@ -46,6 +46,12 @@ class TooManyRequests(ServiceError):
         super().__init__(message, headers={"Retry-After": str(retry_after)} if retry_after else None)
 
 
+class NotImplementedHere(ServiceError):
+    """The feature exists, but not with this server's setup (e.g. direct uploads with local files)."""
+
+    status_code = 501
+
+
 class StorageUnavailable(ServiceError):
     """The media store could not be reached or rejected the request."""
 

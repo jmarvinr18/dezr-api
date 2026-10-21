@@ -1,16 +1,20 @@
+import base64
 import io
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import requests
 from sqlalchemy import select, update
 
+from app.constants import DOCUMENT_KINDS
 from app.database import db
 from app.extensions.ingestion import get_ingestion_service
 from app.model import Document, DocumentChunk
 from app.services.ingestion_service import EMBEDDING_FAILED, GAVE_UP
 from app.services.storage import S3MediaStorage, StorageError
-from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, bucket_keys, login, make_app
+from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, BUCKET, REGION, bucket_keys, login, make_app
 from tests.document_fakes import FakeEmbedder, make_docx, make_pdf
 
 URL = "/api/v1/admin/documents"
@@ -202,6 +206,140 @@ def test_storage_outage_is_503_and_records_nothing(client, admin_headers):
     assert client.get(URL, headers=admin_headers).get_json() == []
 
 
+# ---------- direct uploads (browser -> S3, then confirm) ----------
+
+
+def start_upload(client, headers, size):
+    return client.post(f"{URL}/uploads", json={"size": size}, headers=headers)
+
+
+def send_to_s3(form, name, content):
+    """What the browser does with the form: a multipart POST of every field, then the file."""
+    return requests.post(form["url"], data=form["fields"], files={"file": (name, content)}, timeout=10)
+
+
+def complete(client, headers, upload_id, file_name, title=None):
+    body = {"fileName": file_name} if file_name is not None else {}
+    if title is not None:
+        body["title"] = title
+    return client.post(f"{URL}/uploads/{upload_id}/complete", json=body, headers=headers)
+
+
+def test_direct_upload_is_checked_stored_and_queued(app, client, admin_headers, aws):
+    start = start_upload(client, admin_headers, len(GUIDE_MD))
+    assert start.status_code == 201
+    form = start.get_json()
+    staged = f"dezr/incoming/{form['uploadId']}"
+    assert form["fields"]["key"] == staged and form["maxSize"] == 25 * 1024 * 1024
+    assert form["url"] == f"https://{BUCKET}.s3.{REGION}.amazonaws.com/"
+    expires = datetime.fromisoformat(form["expiresAt"].replace("Z", "+00:00"))
+    assert timedelta(minutes=14) < expires - datetime.now(timezone.utc) <= timedelta(minutes=15)
+    # S3 enforces the limits itself: the key, 1 byte to 25 MB, and the bucket's encryption.
+    policy = json.loads(base64.b64decode(form["fields"]["policy"]))
+    assert ["content-length-range", 1, 25 * 1024 * 1024] in policy["conditions"]
+    assert {"key": staged} in policy["conditions"] and {"bucket": BUCKET} in policy["conditions"]
+    assert form["fields"]["x-amz-server-side-encryption"] == "AES256"
+    # Nothing is recorded (or claimable by a processor) before the file is confirmed.
+    assert client.get(URL, headers=admin_headers).get_json() == []
+
+    assert send_to_s3(form, "guide.md", GUIDE_MD).status_code == 204
+    response = complete(client, admin_headers, form["uploadId"], "doing-business-ph.md", title="  Doing business ")
+
+    assert response.status_code == 202
+    document = response.get_json()
+    assert (document["status"], document["title"], document["fileName"], document["contentType"], document["size"]) == (
+        "processing", "Doing business", "doing-business-ph.md", "text/markdown", len(GUIDE_MD)
+    )
+    assert document["uploadedBy"] == ADMIN_EMAIL
+    # Moved out of incoming/ to a document key, as if uploaded through the API.
+    [key] = bucket_keys(aws)
+    assert key.startswith("dezr/documents/") and key.endswith(".md")
+    assert process(app) == 1
+    assert client.get(f"{URL}/{document['id']}", headers=admin_headers).get_json()["status"] == "ready"
+    # Confirming twice finds nothing to confirm.
+    assert complete(client, admin_headers, form["uploadId"], "doing-business-ph.md").status_code == 404
+
+
+def test_direct_upload_kind_comes_from_the_content(client, admin_headers, aws):
+    form = start_upload(client, admin_headers, 100).get_json()
+    aws.put_object(Bucket=BUCKET, Key=form["fields"]["key"], Body=make_docx())
+    document = complete(client, admin_headers, form["uploadId"], "terms.pdf").get_json()
+    assert document["contentType"] == DOCUMENT_KINDS["docx"] and document["fileName"] == "terms.pdf"
+    assert bucket_keys(aws)[0].endswith(".docx")
+
+
+def test_a_direct_upload_that_fails_the_checks_is_deleted(client, admin_headers, aws):
+    form = start_upload(client, admin_headers, 4).get_json()
+    aws.put_object(Bucket=BUCKET, Key=form["fields"]["key"], Body=b"MZ\x90\x00")
+
+    response = complete(client, admin_headers, form["uploadId"], "virus.pdf")
+
+    assert response.status_code == 415
+    assert bucket_keys(aws) == []
+    assert client.get(URL, headers=admin_headers).get_json() == []
+
+
+def test_an_oversized_direct_upload_is_refused_and_deleted(client, admin_headers, aws):
+    # S3 refuses these itself (content-length-range); the API checks again in case it didn't.
+    form = start_upload(client, admin_headers, 100).get_json()
+    aws.put_object(Bucket=BUCKET, Key=form["fields"]["key"], Body=b"x" * (25 * 1024 * 1024 + 1))
+    assert complete(client, admin_headers, form["uploadId"], "huge.txt").status_code == 413
+    assert bucket_keys(aws) == []
+
+
+def test_a_bad_title_or_missing_name_keeps_the_file_for_a_retry(client, admin_headers, aws):
+    form = start_upload(client, admin_headers, 5).get_json()
+    aws.put_object(Bucket=BUCKET, Key=form["fields"]["key"], Body=b"Text.")
+
+    too_long = complete(client, admin_headers, form["uploadId"], "a.txt", title="x" * 201)
+    assert too_long.status_code == 422
+    assert too_long.get_json()["errors"] == {"title": "Use a title of up to 200 characters."}
+    no_name = complete(client, admin_headers, form["uploadId"], None)
+    assert no_name.status_code == 422 and "fileName" in no_name.get_json()["errors"]
+    assert bucket_keys(aws) == [form["fields"]["key"]]
+
+    assert complete(client, admin_headers, form["uploadId"], "a.txt", title="Short").status_code == 202
+
+
+def test_confirming_an_upload_that_never_arrived_is_404(client, admin_headers):
+    form = start_upload(client, admin_headers, 5).get_json()
+    response = complete(client, admin_headers, form["uploadId"], "a.txt")
+    assert response.status_code == 404 and "upload it again" in response.get_json()["message"]
+    assert complete(client, admin_headers, uuid.uuid4(), "a.txt").status_code == 404
+
+
+def test_starting_an_upload_checks_the_size(client, admin_headers):
+    assert start_upload(client, admin_headers, 0).status_code == 422
+    too_big = start_upload(client, admin_headers, 25 * 1024 * 1024 + 1)
+    assert too_big.status_code == 413 and too_big.get_json()["message"] == "Documents can be up to 25 MB."
+    assert client.post(f"{URL}/uploads", json={}, headers=admin_headers).status_code == 422
+
+
+def test_direct_uploads_need_s3_storage(tmp_path):
+    app = make_app(tmp_path, STORAGE_BACKEND="local", UPLOAD_FOLDER=str(tmp_path / "uploads"))
+    client = app.test_client()
+    app.test_cli_runner().invoke(args=["admin", "create", ADMIN_EMAIL, "--password", ADMIN_PASSWORD])
+    headers = {"Authorization": f"Bearer {login(client).get_json()['token']}"}
+
+    response = start_upload(client, headers, 100)
+
+    assert response.status_code == 501 and "POST /api/v1/admin/documents" in response.get_json()["message"]
+    # The multipart upload still works there.
+    assert upload(client, headers, "a.txt", b"Text.").status_code == 202
+
+
+def test_storage_outage_while_starting_or_confirming_is_503(client, admin_headers, aws):
+    with patch.object(S3MediaStorage, "presign_upload", side_effect=StorageError("down")):
+        assert start_upload(client, admin_headers, 5).status_code == 503
+
+    form = start_upload(client, admin_headers, 5).get_json()
+    aws.put_object(Bucket=BUCKET, Key=form["fields"]["key"], Body=b"Text.")
+    with patch.object(S3MediaStorage, "save", side_effect=StorageError("down")):
+        assert complete(client, admin_headers, form["uploadId"], "a.txt").status_code == 503
+    # Still waiting in incoming/, so confirming again once S3 is back works.
+    assert complete(client, admin_headers, form["uploadId"], "a.txt").status_code == 202
+
+
 # ---------- delete ----------
 
 
@@ -314,6 +452,8 @@ def test_documents_need_an_admin(client):
     assert client.get(URL).status_code == 401
     assert upload(client, {}, "a.txt", b"Text.").status_code == 401
     assert client.delete(f"{URL}/00000000-0000-0000-0000-000000000000").status_code == 401
+    assert start_upload(client, {}, 5).status_code == 401
+    assert complete(client, {}, uuid.uuid4(), "a.txt").status_code == 401
 
 
 def test_unknown_document_is_404(client, admin_headers):

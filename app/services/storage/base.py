@@ -18,6 +18,15 @@ class StoredObject:
     content_type: str
 
 
+@dataclass(frozen=True)
+class DirectUpload:
+    """A form a browser can POST a file to, straight into the store: `url`, plus `fields` to send
+    as form fields before the file part (named "file")."""
+
+    url: str
+    fields: dict[str, str]
+
+
 class MediaStorage(ABC):
     """Where uploaded media bytes live. Keys are backend-neutral, '/'-separated paths such as
     'media/<random>.pdf'; the database stores only the key."""
@@ -44,3 +53,8 @@ class MediaStorage(ABC):
         except StoredObjectNotFound:
             return False
         return True
+
+    def presign_upload(self, key: str, *, max_size: int, expires_in: int) -> DirectUpload | None:
+        """A short-lived form for uploading up to max_size bytes to key without passing through
+        this server, or None when the backend can't take uploads directly (local files)."""
+        return None

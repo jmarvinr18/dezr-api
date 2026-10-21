@@ -2,9 +2,9 @@
 
 How dezr-ui (or any other client) works with this API.
 
-- **Part 1 — [Switching dezr-ui over](#part-1--switching-dezr-ui-over)**: which UI file reads what
+- **Part 1 â€” [Switching dezr-ui over](#part-1--switching-dezr-ui-over)**: which UI file reads what
   today, what it calls instead, and how the admin sign-in fits in.
-- **Part 2 — [API reference](#part-2--api-reference)**: every endpoint, with request and response shapes.
+- **Part 2 â€” [API reference](#part-2--api-reference)**: every endpoint, with request and response shapes.
 
 Interactive docs are served by the running API at `/swagger-ui`, and the raw spec at
 `/openapi.json`.
@@ -65,7 +65,7 @@ function flattenIssues(errors: unknown, prefix = ''): Record<string, string> {
   if (!errors || typeof errors !== 'object') return {}
   return Object.assign({}, ...Object.entries(errors).map(([k, v]) => flattenIssues(v, prefix ? `${prefix}.${k}` : k)))
 }
-// flattenIssues(error.data.errors.json) → { "slides.2.title": "Required.", ... }
+// flattenIssues(error.data.errors.json) â†’ { "slides.2.title": "Required.", ... }
 ```
 
 | Status | Means |
@@ -88,7 +88,7 @@ needed in production.
 
 ---
 
-# Part 1 — Switching dezr-ui over
+# Part 1 â€” Switching dezr-ui over
 
 Today dezr-ui reads its content from files in its own repository (`content/*.md`,
 `shared/site/defaults.ts`) and keeps admin edits in Nitro storage (`.data/cms`). With this API,
@@ -96,10 +96,10 @@ the API is the single source of truth and the Nuxt server becomes a thin layer i
 the same way it forwards `/api/v1/ai/**` (the assistant's chat), which this API now answers too.
 
 ```
-Browser ──▶ Nuxt server (dezr-ui) ──▶ dezr-api ──▶ PostgreSQL, S3
-              │  adds Authorization (admin token kept in its sealed cookie)
-              │  adds X-Forwarded-For (visitor's IP, for lockout / rate limit)
-              │  renders + sanitises page Markdown (renderMarkdown)
+Browser â”€â”€â–¶ Nuxt server (dezr-ui) â”€â”€â–¶ dezr-api â”€â”€â–¶ PostgreSQL, S3
+              â”‚  adds Authorization (admin token kept in its sealed cookie)
+              â”‚  adds X-Forwarded-For (visitor's IP, for lockout / rate limit)
+              â”‚  renders + sanitises page Markdown (renderMarkdown)
 ```
 
 Nuxt settings to add (names are suggestions): `NUXT_CONTENT_API` (the API origin, e.g.
@@ -110,11 +110,11 @@ from the `X-Forwarded-For` the Nuxt server sends.
 
 | dezr-ui file | Reads today | Calls instead |
 | --- | --- | --- |
-| `app/plugins/cms-settings.ts` → `useAppConfig()` in `SiteHeader`, `SiteNav`, `HeroSlideshow`, `SiteSidebar`, `SidebarMission`, `PromoBanner`, `SiteFooter`, `ContactSection`, `JapanDeskEmail`, the chat components | `/api/cms/settings` (null until an admin saves) | `GET /api/v1/site-settings` — always the full settings, so `applySiteSettings()` can apply it as is |
-| `app/pages/[...slug].vue` | `queryCollection('pages').path()` + `/api/cms/page` | `GET /api/v1/pages/by-path?path=<route.path>`; 404 → the 404 page |
+| `app/plugins/cms-settings.ts` â†’ `useAppConfig()` in `SiteHeader`, `SiteNav`, `HeroSlideshow`, `SiteSidebar`, `SidebarMission`, `PromoBanner`, `SiteFooter`, `ContactSection`, `JapanDeskEmail`, the chat components | `/api/cms/settings` (null until an admin saves) | `GET /api/v1/site-settings` â€” always the full settings, so `applySiteSettings()` can apply it as is |
+| `app/pages/[...slug].vue` | `queryCollection('pages').path()` + `/api/cms/page` | `GET /api/v1/pages/by-path?path=<route.path>`; 404 â†’ the 404 page |
 | `server/api/cms/page.get.ts` | Nitro storage | Fetch the page from the API and return `{ ...fields, ast: await renderMarkdown(page.body) }`. The page component then always uses `<MDCRenderer>`, and the Markdown is sanitised on the server exactly as admin edits are today. |
 | `app/components/content/SiteMap.vue` | `queryCollection('pages')` | `GET /api/v1/pages` (published, in site-map order) |
-| `app/pages/search.vue` | `queryCollectionSearchSections('pages')` | `GET /api/v1/search?q=` — same `{id, title, titles, content}` shape, filtering already done |
+| `app/pages/search.vue` | `queryCollectionSearchSections('pages')` | `GET /api/v1/search?q=` â€” same `{id, title, titles, content}` shape, filtering already done |
 | `server/routes/media/[name].get.ts` | Nitro storage | Proxy `GET /api/v1/media/<name>` (keeps `/media/<name>` URLs working) |
 | `server/api/contact.post.ts` | Logs in dev, 503 in production | Forward the body to `POST /api/v1/contact-messages` (the form's fields already match, `copy` included) with `X-Forwarded-For` |
 
@@ -139,14 +139,14 @@ pages under `app/pages/admin/` barely change and the token never reaches the bro
 | `GET /api/admin/page?path=` | `GET /api/v1/admin/pages/{id}` | The UI's `original` is the API's `default`; its `edit` is the page itself when `edited` is true. |
 | `PUT /api/admin/page?path=` | `PATCH /api/v1/admin/pages/{id}` | Sends only what changed (sending every field is fine too). |
 | `DELETE /api/admin/page?path=` (reset) | `POST /api/v1/admin/pages/{id}/reset` | Restores the shipped text, options and path. |
-| `POST /api/admin/preview` | — | Stays in Nuxt: it renders Markdown, which is the UI's job. |
+| `POST /api/admin/preview` | â€” | Stays in Nuxt: it renders Markdown, which is the UI's job. |
 | `GET/POST /api/admin/media`, `DELETE /api/admin/media/{name}` | `GET/POST /api/v1/admin/media`, `DELETE .../{name}` | Same fields (`name`, `type`, `size`, `uploadedAt`, `uploadedBy`, `url`). Forward the multipart body as is. |
-| — | `POST /api/v1/admin/pages`, `DELETE /api/v1/admin/pages/{id}` | New: create and delete pages. |
-| — | `GET /api/v1/admin/contact-messages`, `GET/DELETE .../{id}` | New: an inbox for contact-form enquiries. |
+| â€” | `POST /api/v1/admin/pages`, `DELETE /api/v1/admin/pages/{id}` | New: create and delete pages. |
+| â€” | `GET /api/v1/admin/contact-messages`, `GET/DELETE .../{id}` | New: an inbox for contact-form enquiries. |
 
 ---
 
-# Part 2 — API reference
+# Part 2 â€” API reference
 
 ## Public
 
@@ -156,14 +156,14 @@ Everything the site's layout shows. Sections nobody changed come back as shipped
 
 ```json
 {
-  "site": { "name": "Donato & Zarate Law Firm", "logo": { "title": "Donato & Zarate", "tagline": "Attorneys and Counselors at Law" }, "description": "…", "url": "https://www.deszr.com" },
-  "contact": { "addressLines": ["7/F Electra House, …", "1229 Makati City, Philippines"], "email": "admin@deszr.com", "japanDeskEmail": "japandesk@deszr.com", "phone": "+632-8-892-7288", "fax": "+632-8-893-2764", "hours": "Monday - Friday, …" },
+  "site": { "name": "Donato & Zarate Law Firm", "logo": { "title": "Donato & Zarate", "tagline": "Attorneys and Counselors at Law" }, "description": "â€¦", "url": "https://www.deszr.com" },
+  "contact": { "addressLines": ["7/F Electra House, â€¦", "1229 Makati City, Philippines"], "email": "admin@deszr.com", "japanDeskEmail": "japandesk@deszr.com", "phone": "+632-8-892-7288", "fax": "+632-8-893-2764", "hours": "Monday - Friday, â€¦" },
   "nav": [{ "label": "Home", "to": "/", "home": true }, { "label": "Partners and Counsel", "to": "/partners-and-counsel", "home": false }],
-  "slides": [{ "title": "Corporation", "caption": "…", "scene": "dusk", "headline": "Counsel", "headline2": "Clarity", "tagline": "…" }],
-  "mission": { "title": "Our Mission", "text": "…", "link": { "label": "More info", "to": "/partners-and-counsel" } },
-  "banners": [{ "variant": "en", "kicker": "", "title": "Doing Business", "title2": "in the Philippines", "action": "Download", "url": "/downloads/….pdf", "lang": "en" }],
+  "slides": [{ "title": "Corporation", "caption": "â€¦", "scene": "dusk", "headline": "Counsel", "headline2": "Clarity", "tagline": "â€¦" }],
+  "mission": { "title": "Our Mission", "text": "â€¦", "link": { "label": "More info", "to": "/partners-and-counsel" } },
+  "banners": [{ "variant": "en", "kicker": "", "title": "Doing Business", "title2": "in the Philippines", "action": "Download", "url": "/downloads/â€¦.pdf", "lang": "en" }],
   "footer": { "columns": [{ "title": "About Us", "links": [{ "label": "Library", "to": "/library" }] }] },
-  "assistant": { "title": "AI Assistant", "name": "Firm Assistant", "subtitle": "…", "greeting": "How can I help?", "intro": "…", "placeholder": "Ask a question…", "prompts": ["…"], "disclaimer": "…" }
+  "assistant": { "title": "AI Assistant", "name": "Firm Assistant", "subtitle": "â€¦", "greeting": "How can I help?", "intro": "â€¦", "placeholder": "Ask a questionâ€¦", "prompts": ["â€¦"], "disclaimer": "â€¦" }
 }
 ```
 
@@ -182,7 +182,7 @@ or unpublished paths are `404`.
   "description": "Careers at the firm.", "lang": "en",
   "slideshow": true, "sidebar": "home", "tools": false,
   "parent": { "title": "About us", "to": null }, "order": 8,
-  "body": "We are not recruiting for associate or staff positions right now. …",
+  "body": "We are not recruiting for associate or staff positions right now. â€¦",
   "updatedAt": "2026-10-20T06:46:31.334517+00:00"
 }
 ```
@@ -193,7 +193,7 @@ renderer** (dezr-ui's `renderMarkdown()`); never inject it as HTML.
 ### `GET /api/v1/search?q=visa`
 
 Sections of published pages containing every word (case-insensitive), at most 50, in site-map
-order: `[{ id: "/#immigration", title: "Immigration", titles: ["Law Office …"], level: 2, content: "We obtain resident visas …" }]`.
+order: `[{ id: "/#immigration", title: "Immigration", titles: ["Law Office â€¦"], level: 2, content: "We obtain resident visas â€¦" }]`.
 An empty `q` returns `[]`.
 
 ### `GET /api/v1/media/{name}`
@@ -204,7 +204,7 @@ and a sandboxing `Content-Security-Policy`. `404` for unknown names.
 ### `POST /api/v1/contact-messages`
 
 ```json
-{ "name": "Juan dela Cruz", "email": "juan@example.com", "subject": "Incorporation", "message": "…", "copy": false }
+{ "name": "Juan dela Cruz", "email": "juan@example.com", "subject": "Incorporation", "message": "â€¦", "copy": false }
 ```
 
 `201 { id, receivedAt }`. `422` lists invalid fields; `429` after `CONTACT_RATE_LIMIT_PER_HOUR`
@@ -215,15 +215,15 @@ messages from one visitor in an hour.
 Options for the admin forms: `settingsSections`, `slideScenes`, `bannerVariants`, `pageSidebars`,
 `pageBodyMaxLength`, and `media: { acceptedExtensions, maxFileSize }`.
 
-## Admin — sign-in
+## Admin â€” sign-in
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/admin/auth/login` | `{ email, password }` → `{ token, expiresAt, user: { id, email, lastLoginAt } }`. `401` wrong email or password (same answer for both), `429` locked out (`Retry-After`), `503` no `SECRET_KEY`. |
+| POST | `/admin/auth/login` | `{ email, password }` â†’ `{ token, expiresAt, user: { id, email, lastLoginAt } }`. `401` wrong email or password (same answer for both), `429` locked out (`Retry-After`), `503` no `SECRET_KEY`. |
 | POST | `/admin/auth/logout` | `204`. Revokes every token this admin holds. |
 | GET | `/admin/auth/me` | `{ id, email, lastLoginAt }` |
 
-## Admin — site settings
+## Admin â€” site settings
 
 All return `{ settings, defaults, revision: { updatedAt, updatedBy } | null, editedSections: [...] }`.
 
@@ -235,12 +235,12 @@ All return `{ settings, defaults, revision: { updatedAt, updatedBy } | null, edi
 | DELETE | `/admin/site-settings` | Back to the shipped settings. |
 | DELETE | `/admin/site-settings/{section}` | Back to one section's shipped settings. `404` for an unknown section. |
 
-Validation follows dezr-ui's `siteSettingsSchema`: lengths, 1–12 menu items and slides, up to 8
+Validation follows dezr-ui's `siteSettingsSchema`: lengths, 1â€“12 menu items and slides, up to 8
 banners, 4 footer columns of 12 links and 6 assistant prompts, `scene` in
 `dusk | night | teal | violet | dawn`, `variant` in `en | ja | de | fi`, `lang` like `en` or `pt-BR`,
 and every link a site path or `https` / `mailto` / `tel` link.
 
-## Admin — pages
+## Admin â€” pages
 
 | Method | Path | |
 | --- | --- | --- |
@@ -253,10 +253,10 @@ and every link a site path or `https` / `mailto` / `tel` link.
 
 Page fields: `path` (`/` or lower-case words joined by hyphens, e.g. `/about-us/team`), `title`
 (120), `heading` (120), `description` (300), `lang`, `slideshow`, `sidebar` (`home | banners`),
-`tools`, `parent` (`{ title, to? }` or `null`), `order` (0–10000), `published`, `body` (Markdown,
+`tools`, `parent` (`{ title, to? }` or `null`), `order` (0â€“10000), `published`, `body` (Markdown,
 100,000 characters). The home page can't be deleted, moved or unpublished (`409`).
 
-## Admin — media
+## Admin â€” media
 
 | Method | Path | |
 | --- | --- | --- |
@@ -267,7 +267,7 @@ Page fields: `path` (`/` or lower-case words joined by hyphens, e.g. `/about-us/
 `url` is `MEDIA_PUBLIC_BASE_URL/<name>` (`/media/<name>` by default), the address to put in pages
 and banners.
 
-## Admin — contact messages
+## Admin â€” contact messages
 
 | Method | Path | |
 | --- | --- | --- |
@@ -284,7 +284,7 @@ vendor-portal-api's, so `app/types/chat.ts` and the chat client need no changes.
 
 | Method | Path | |
 | --- | --- | --- |
-| POST | `/ai/messages` | `{ content, sessionId?, agentId?, context?: { page? } }` → `201 { sessionId, userMessage, assistantMessage }` |
+| POST | `/ai/messages` | `{ content, sessionId?, agentId?, context?: { page? } }` â†’ `201 { sessionId, userMessage, assistantMessage }` |
 | POST | `/ai/messages/stream` | Same body; the answer as server-sent events (below) |
 
 Omit `sessionId` to start a conversation; send the returned one to continue it. A message is up
@@ -293,12 +293,12 @@ caller's `X-Forwarded-For` (last entry) is taken as the visitor's address for th
 dezr-ui's proxy should forward it.
 
 ```
-event: thinking  data: {"text": "…"}                         the model's reasoning
+event: thinking  data: {"text": "â€¦"}                         the model's reasoning
 event: tool      data: {id, name, status, input, output}    a document search: started, then
                                                             completed / failed (same id)
-event: delta     data: {"text": "…"}                         the answer, piece by piece
+event: delta     data: {"text": "â€¦"}                         the answer, piece by piece
 event: done      data: {sessionId, userMessage, assistantMessage}
-event: error     data: {"code": 503, "message": "…"}         if it fails mid-answer
+event: error     data: {"code": 503, "message": "â€¦"}         if it fails mid-answer
 ```
 
 `assistantMessage` carries `content`, `citations` (`[{type: "document", id, label}]`: the
@@ -307,7 +307,7 @@ HTTP errors: `401` no or wrong key, `404` unknown conversation, `409` conversati
 messages), `422` empty or too long, `429` too many messages (per visitor per minute, or for
 everyone per day) or the agent throttled, `503` the agent unavailable or not configured.
 
-## Admin — documents (RAG ingestion)
+## Admin â€” documents (RAG ingestion)
 
 The files the AI assistant can search. dezr-ui's Admin > Documents page uses these (its contract
 is `dezr-ui/docs/document-ingestion-api.md`; this API implements it as written).
@@ -316,6 +316,8 @@ is `dezr-ui/docs/document-ingestion-api.md`; this API implements it as written).
 | --- | --- | --- |
 | GET | `/admin/documents` | `Document[]`, newest first. Poll while any is `processing`. |
 | POST | `/admin/documents` | multipart/form-data: `file` (required), `title` (optional, up to 200 characters; defaults to the file name without its extension). `202` with the document as `processing`. |
+| POST | `/admin/documents/uploads` | JSON `{"size": <bytes>}`. `201` `{uploadId, url, fields, expiresAt, maxSize}`: a presigned S3 form for sending the file without passing through dezr-ui's server (Amplify Hosting refuses bodies over about 4.5 MB). `413` over 25 MB, `501` with local storage (use the multipart POST). |
+| POST | `/admin/documents/uploads/{uploadId}/complete` | JSON `{"fileName": "…", "title": "…"}` (title optional), once the file is in S3. Same checks and `202` as the multipart POST; `404` if no file arrived (or it expired, or was already confirmed). A file failing the checks (`413`, `415`) is deleted; after a `422` (title, fileName) it is kept for a retry. |
 | GET | `/admin/documents/{id}` | One document |
 | DELETE | `/admin/documents/{id}` | `204`. Removes the file, its passages and their vectors; cancels processing still running. Allowed in any status. |
 | GET | `/admin/documents/{id}/chunks?page=1&pageSize=50` | The passages, in reading order (for checking the chunking) |
@@ -338,8 +340,14 @@ is `dezr-ui/docs/document-ingestion-api.md`; this API implements it as written).
 
 `status` is `processing` (stored, being chunked and embedded), `ready` (searchable; `chunkCount`
 passages) or `failed` (`error` says why, in words an admin can act on: "The PDF has no readable
-text. It may be a scan; …", "The PDF is password-protected. …", "The embedding service is
-unavailable, …").
+text. It may be a scan; â€¦", "The PDF is password-protected. â€¦", "The embedding service is
+unavailable, â€¦").
+
+Sending the file to the form (the browser, `fetch` or `XMLHttpRequest`): a `multipart/form-data`
+POST to `url` with every entry of `fields` first and the file last, in a part named `file`. S3
+answers `204`; a `403` means the form expired (start again), a `400 EntityTooLarge` that the file
+is over `maxSize`. The bucket's CORS rule (`upload_origins` in Terraform) must list the page's
+origin.
 
 A passage (`/chunks` items):
 
@@ -357,7 +365,7 @@ A passage (`/chunks` items):
 ```
 
 Errors: `413` over 25 MB, `415` not a PDF / .docx / .txt / .md by content (an old `.doc` gets a
-message to save it as `.docx`), `422` title too long (`errors: { "title": "…" }`) or no `file`,
+message to save it as `.docx`), `422` title too long (`errors: { "title": "â€¦" }`) or no `file`,
 `503` the file store is down (nothing stored), `404` unknown id.
 
 ### Reading the passages for retrieval

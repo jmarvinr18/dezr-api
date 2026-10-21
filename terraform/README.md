@@ -5,11 +5,11 @@ PostgreSQL with pgvector, the API on port 80, and the document worker. Apply ret
 answers `GET /healthz`, so it is usable straight away at the `api_url` output.
 
 ```
-Internet ──:80──▶ Elastic IP ──▶ EC2 t4g.small (Amazon Linux 2023, Docker)
-                                   ├─ api      dezr-api, gunicorn, port 80
-                                   ├─ worker   flask documents worker (RAG ingestion)
-                                   └─ db       pgvector/pgvector:pg17, 127.0.0.1 only
-                                        └─ data on its own EBS volume (kept across redeploys)
+Internet â”€â”€:80â”€â”€â–¶ Elastic IP â”€â”€â–¶ EC2 t4g.small (Amazon Linux 2023, Docker)
+                                   â”œâ”€ api      dezr-api, gunicorn, port 80
+                                   â”œâ”€ worker   flask documents worker (RAG ingestion)
+                                   â””â”€ db       pgvector/pgvector:pg17, 127.0.0.1 only
+                                        â””â”€ data on its own EBS volume (kept across redeploys)
                          S3 bucket: dezr/  uploaded media and documents
                                     deploy/ the app bundle the instance builds from
                          SSM Parameter Store: generated DB password, SECRET_KEY, admin password
@@ -24,7 +24,7 @@ Internet ──:80──▶ Elastic IP ──▶ EC2 t4g.small (Amazon Linux 202
 | EC2 instance (`t4g.small`, Graviton) | Docker host. Builds the API image on first boot from the uploaded bundle. |
 | EBS volume (gp3, 10 GiB, encrypted) | PostgreSQL's data, on its own disk so redeploys keep the database |
 | Elastic IP | A fixed address across redeploys |
-| S3 bucket (private, encrypted) | Media and document uploads (`STORAGE_BACKEND=s3`) and the app bundle |
+| S3 bucket (private, encrypted) | Media and document uploads (`STORAGE_BACKEND=s3`) and the app bundle. Admin > Documents uploads straight to it from the browser (`upload_origins`), since Amplify Hosting refuses request bodies over about 4.5 MB |
 | IAM role + instance profile | S3 access to that bucket, its SSM parameters, Session Manager, invoking the dezr-ai AgentCore runtime, and Bedrock embeddings when enabled. No access keys anywhere. |
 | SSM parameters (SecureString) | Generated PostgreSQL password, `SECRET_KEY`, the default admin's password, the document search key dezr-ai uses (`/dezr-api/document-search-key`), and the AI chat key dezr-ui sends (`/dezr-api/ai-api-key`). Kept out of user data. |
 
@@ -60,7 +60,7 @@ terraform init
 terraform apply
 ```
 
-Apply takes about 6–10 minutes. Most of that is the instance installing Docker and building the
+Apply takes about 6â€“10 minutes. Most of that is the instance installing Docker and building the
 image, and apply waits for it. Then:
 
 ```bash
@@ -117,7 +117,7 @@ list of files (`app/**/*.py`, the seed pages, migrations, `pyproject.toml`, `uv.
 
 - **Code or settings changed:** `terraform apply` uploads a new bundle and **replaces the
   instance**. The old one is shut down cleanly first, and the new one builds and starts the stack
-  on the same Elastic IP. Expect about 5–8 minutes of downtime. The database (its own EBS volume)
+  on the same Elastic IP. Expect about 5â€“8 minutes of downtime. The database (its own EBS volume)
   and uploads (S3) carry over.
 - **Restart in place** (e.g. after editing `/opt/dezr/deploy.env` on the instance):
   `sudo /opt/dezr/deploy.sh`.
@@ -179,7 +179,7 @@ turned that off). The bucket is only deleted when it is empty, unless `force_des
   required file not found`:** the script had Windows (CRLF) line endings. Terraform now converts
   the user data and the app bundle to LF itself, and `tests/test_line_endings.py` fails on CRLF
   in the shell scripts, Dockerfile, compose file and templates.
-- **`Instance type … is not offered`:** pick another `instance_type` or `aws_region`.
+- **`Instance type â€¦ is not offered`:** pick another `instance_type` or `aws_region`.
 - **Documents stay `failed` with "The embedding service is unavailable":** the model isn't
   enabled in `embedding_region`, or `embedding_provider` should be `none`.
 
@@ -191,7 +191,7 @@ turned that off). The bucket is only deleted when it is empty, unless `force_des
 | `variables.tf` | Settings (all have defaults) |
 | `network.tf` | VPC, subnet, routing, security group |
 | `iam.tf` | Instance role and its permissions |
-| `storage.tf` | S3 bucket, the app bundle, generated secrets in SSM |
+| `storage.tf` | S3 bucket (with the CORS rule for direct document uploads and a lifecycle rule that expires unconfirmed ones), the app bundle, generated secrets in SSM |
 | `compute.tf` | AMI, instance, data volume, Elastic IP, and the wait for `/healthz` |
 | `assistant.tf` | The smoke test: one question to the assistant after a (re)deploy |
 | `outputs.tf` | URL, IP, shell command, admin password (sensitive) |

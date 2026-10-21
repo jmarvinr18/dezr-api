@@ -64,7 +64,7 @@ docs/database-schema.md   ER diagram and table notes
 | Admin > Pages | `GET, POST /api/v1/admin/pages`, `GET, PATCH, DELETE .../{id}`, `POST .../{id}/reset` |
 | Admin > Media | `GET, POST /api/v1/admin/media`, `DELETE .../{name}` |
 | Admin > Messages (new) | `GET /api/v1/admin/contact-messages`, `GET, DELETE .../{id}` |
-| Admin > Documents (files the assistant can search) | `GET, POST /api/v1/admin/documents`, `GET, DELETE .../{id}`, `GET .../{id}/chunks` |
+| Admin > Documents (files the assistant can search) | `GET, POST /api/v1/admin/documents`, `POST .../uploads`, `POST .../uploads/{uploadId}/complete`, `GET, DELETE .../{id}`, `GET .../{id}/chunks` |
 | Admin form options | `GET /api/v1/reference-data` |
 | AI assistant chat (the bubble and `/assistant`) | `POST /api/v1/ai/messages`, `POST /api/v1/ai/messages/stream`, relayed to the dezr-ai agent |
 
@@ -88,7 +88,7 @@ for switching dezr-ui over.
   `server/utils/cms.ts`), which strips scripts, event handlers and unsafe links.
 - **Media**: images (PNG, JPG, GIF, WebP) and PDFs up to 10 MB. The type is recognised from the
   file's first bytes, never its name; SVG and HTML are refused because they can carry scripts.
-  Files are published under a URL-safe name (`Partner Photo.JPG` → `partner-photo.jpg`) and served
+  Files are published under a URL-safe name (`Partner Photo.JPG` â†’ `partner-photo.jpg`) and served
   with `nosniff` and a sandboxing Content-Security-Policy.
 - **Contact enquiries** are stored for the firm to read in the admin area. Each visitor may send
   `CONTACT_RATE_LIMIT_PER_HOUR` (5) an hour; only a keyed hash of their IP is kept. Email delivery
@@ -101,12 +101,20 @@ contract in `dezr-ui/docs/document-ingestion-api.md`). `POST /api/v1/admin/docum
 file (S3 under `documents/`, or local disk) and answers `202` with `status: "processing"`; the
 document becomes `ready` (with `chunkCount`) or `failed` (with an `error` an admin can act on).
 
+**Direct uploads** (S3 only): Amplify Hosting, where dezr-ui runs, refuses request bodies over
+about 4.5 MB, so the page sends larger files straight to S3. `POST .../uploads` with the size
+returns a presigned form (15 minutes, 1 byte to 25 MB, enforced by S3); the browser posts the
+file to it, under `incoming/`; `POST .../uploads/{uploadId}/complete` runs the same checks as
+a normal upload, moves the file to `documents/` and queues it. Nothing is recorded before that,
+and S3 deletes an upload nobody confirmed after a day (`terraform/storage.tf`). With
+`STORAGE_BACKEND=local`, `POST .../uploads` answers `501` and the page uploads the usual way.
+
 **Files:** PDF, Word (.docx), plain text and Markdown, up to 25 MB, recognised by their content
 (a renamed .exe is refused with 415; an old .doc is told to save as .docx). Scanned PDFs without a
 text layer fail with "The PDF has no readable text" (no OCR here).
 
-**Pipeline** (`services/ingestion_service.py`): read the file → parse it into blocks (headings,
-paragraphs, lists, tables, code) → hybrid chunking → embed each passage with its context → store
+**Pipeline** (`services/ingestion_service.py`): read the file â†’ parse it into blocks (headings,
+paragraphs, lists, tables, code) â†’ hybrid chunking â†’ embed each passage with its context â†’ store
 passages and vectors in `document_chunks` (pgvector).
 
 - **Parsing.** Word and Markdown say what their structure is (heading styles / `#`, list numbering,
@@ -176,9 +184,9 @@ visitor's message, relays it to the agent, and stores the conversation. dezr-ui'
 and `/assistant` page) uses the same contract as vendor-portal-api's, so it works unchanged.
 
 ```
-dezr-ui ──POST /api/v1/ai/messages/stream──▶ dezr-api ──InvokeAgentRuntime──▶ AgentCore ──▶ dezr-ai
-                                               │ stores question + answer          │ searches documents
-                                               ▼                                   ▼
+dezr-ui â”€â”€POST /api/v1/ai/messages/streamâ”€â”€â–¶ dezr-api â”€â”€InvokeAgentRuntimeâ”€â”€â–¶ AgentCore â”€â”€â–¶ dezr-ai
+                                               â”‚ stores question + answer          â”‚ searches documents
+                                               â–¼                                   â–¼
                                        ai_sessions / ai_messages   POST /api/v1/documents/search (this API)
 ```
 
@@ -199,11 +207,11 @@ dezr-ui ──POST /api/v1/ai/messages/stream──▶ dezr-api ──InvokeAgen
 
 | Setting | Default | |
 | --- | --- | --- |
-| `AI_AGENT_RUNTIME_ARN` | – | dezr-ai's runtime (`arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>`). The AWS identity needs `bedrock-agentcore:InvokeAgentRuntime` on it. |
+| `AI_AGENT_RUNTIME_ARN` | â€“ | dezr-ai's runtime (`arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>`). The AWS identity needs `bedrock-agentcore:InvokeAgentRuntime` on it. |
 | `AI_AGENT_REGION` | `AWS_DEFAULT_REGION` | |
-| `AI_AGENT_URL` | – | Instead of AgentCore: dezr-ai over HTTP (`uv run python main.py` in dezr-ai → `http://localhost:8080/invocations`; from Docker `http://host.docker.internal:8080/invocations`) |
+| `AI_AGENT_URL` | â€“ | Instead of AgentCore: dezr-ai over HTTP (`uv run python main.py` in dezr-ai â†’ `http://localhost:8080/invocations`; from Docker `http://host.docker.internal:8080/invocations`) |
 | `AI_AGENT_TIMEOUT_SECONDS` | `120` | Longest wait between two pieces of the answer |
-| `AI_API_KEY` | – | Bearer key for the chat endpoints; unset leaves them open (development) |
+| `AI_API_KEY` | â€“ | Bearer key for the chat endpoints; unset leaves them open (development) |
 | `AI_RATE_LIMIT_PER_MINUTE` / `AI_DAILY_MESSAGE_LIMIT` / `AI_MAX_MESSAGES_PER_SESSION` | `10` / `1000` / `100` | `0` turns a limit off |
 
 With neither `AI_AGENT_RUNTIME_ARN` nor `AI_AGENT_URL`, the chat endpoints answer 503 and the rest
@@ -258,7 +266,7 @@ from `X-Forwarded-For` rather than the Nuxt server's.
 
 | Setting | Default | |
 | --- | --- | --- |
-| `SECRET_KEY` | – | Required in production (admin sign-in answers 503 without it). Random per process in debug. |
+| `SECRET_KEY` | â€“ | Required in production (admin sign-in answers 503 without it). Random per process in debug. |
 | `ADMIN_SESSION_HOURS` | `8` | |
 | `ADMIN_MAX_FAILURES` / `ADMIN_LOCKOUT_MINUTES` | `5` / `15` | |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front that set `X-Forwarded-For`. Never more than really exist. |
@@ -278,11 +286,11 @@ Same design as vendor-portal-api's document storage:
 | Setting | Default | |
 | --- | --- | --- |
 | `STORAGE_BACKEND` | `s3` | `local` stores files on disk under `UPLOAD_FOLDER` (development only) |
-| `S3_BUCKET` | – | Required for `s3` |
+| `S3_BUCKET` | â€“ | Required for `s3` |
 | `S3_REGION` | `AWS_DEFAULT_REGION` | |
 | `S3_KEY_PREFIX` | `dezr` | |
 | `S3_SERVER_SIDE_ENCRYPTION` | `AES256` | `aws:kms` with `S3_KMS_KEY_ID`, or empty for the bucket default |
-| `S3_ENDPOINT_URL` | – | Only for S3-compatible emulators |
+| `S3_ENDPOINT_URL` | â€“ | Only for S3-compatible emulators |
 
 ## Tests
 

@@ -1,30 +1,49 @@
 """Documents the AI assistant can search: upload, list, read and delete. Processing (chunking and
-embedding) happens later, in services/ingestion_service.py."""
+embedding) happens later, in services/ingestion_service.py.
+
+A file reaches the store one of two ways:
+- upload(): the file comes through this API (multipart). Simple, but every byte passes through
+  dezr-ui's server, and Amplify Hosting refuses request bodies over about 4.5 MB.
+- start_upload() then complete_upload(): the browser sends the file straight to S3 with a
+  presigned form, under incoming/<upload id>; confirming it runs the same checks, moves it to
+  documents/ and records it. Until then nothing is in the database, so no processor can claim
+  a document whose file isn't there yet, and an abandoned upload is just an object S3 expires.
+"""
 
 import logging
 import math
 import re
+import tempfile
 import uuid
 from collections.abc import Callable
+from datetime import timedelta
+from typing import BinaryIO
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.constants import DOCUMENT_TITLE_MAX_LENGTH
+from app.constants import DOCUMENT_TITLE_MAX_LENGTH, DOCUMENT_UPLOAD_EXPIRES_SECONDS, DOCUMENT_UPLOAD_PREFIX
 from app.model import Document, DocumentChunk
-from app.services.document_validator import DocumentValidator
-from app.services.errors import NotFound, StorageUnavailable, ValidationFailed
-from app.services.storage import MediaStorage, StorageError
+from app.model.admin_user import utcnow
+from app.services.document_validator import DocumentValidator, ValidatedDocument
+from app.services.errors import NotFound, NotImplementedHere, ServiceError, StorageUnavailable, ValidationFailed
+from app.services.storage import MediaStorage, StorageError, StoredObjectNotFound
 from app.services.upload_validator import IncomingFile
 
 log = logging.getLogger(__name__)
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+_STORE_DOWN = "The file store is unavailable. Please try again."
 
 
 def default_document_key(extension: str) -> str:
     # Random object names: the uploaded file name never becomes part of the key.
     return f"documents/{uuid.uuid4().hex}.{extension}"
+
+
+def upload_key(upload_id: uuid.UUID) -> str:
+    """Where a direct upload waits until it is confirmed."""
+    return f"{DOCUMENT_UPLOAD_PREFIX}/{upload_id}"
 
 
 class DocumentService:
@@ -54,12 +73,62 @@ class DocumentService:
     def upload(self, incoming: IncomingFile | None, title: str | None, uploaded_by: str) -> Document:
         """Stores the file and records it as `processing`; chunking runs in the background."""
         title = self._clean_title(title)
-        upload = self._validator.validate(incoming)
+        return self._store(self._validator.validate(incoming), title, uploaded_by)
+
+    def start_upload(self, size: int) -> dict:
+        """A presigned form for sending a file of `size` bytes straight to S3. Nothing is recorded
+        until complete_upload() confirms it."""
+        self._validator.check_size(size)
+        upload_id = uuid.uuid4()
+        max_size = self._validator.max_file_size
+        try:
+            form = self._storage.presign_upload(
+                upload_key(upload_id), max_size=max_size, expires_in=DOCUMENT_UPLOAD_EXPIRES_SECONDS
+            )
+        except StorageError as exc:
+            raise StorageUnavailable(_STORE_DOWN) from exc
+        if form is None:
+            raise NotImplementedHere(
+                "Direct uploads need S3 storage. Send the file to POST /api/v1/admin/documents instead."
+            )
+        return {
+            "upload_id": upload_id,
+            "url": form.url,
+            "fields": form.fields,
+            "expires_at": utcnow() + timedelta(seconds=DOCUMENT_UPLOAD_EXPIRES_SECONDS),
+            "max_size": max_size,
+        }
+
+    def complete_upload(
+        self, upload_id: uuid.UUID, file_name: str | None, title: str | None, uploaded_by: str
+    ) -> Document:
+        """Records a file sent with start_upload()'s form as `processing`, once it passes the same
+        checks as upload(): the kind is judged from its bytes, never from the name. A file that
+        fails them is deleted; a missing one (never sent, or expired) is 404."""
+        # Checked before the file is read, so a mistake here leaves it in place for a retry.
+        title = self._clean_title(title)
+        if not (file_name or "").strip():
+            message = "Send the uploaded file's name as fileName."
+            raise ValidationFailed(message, errors={"fileName": message})
+
+        staged = upload_key(upload_id)
+        with self._download(staged) as buffer:
+            try:
+                upload = self._validator.validate(IncomingFile(file_name, buffer))
+            except ServiceError:
+                self._discard(staged)
+                raise
+            document = self._store(upload, title, uploaded_by)
+        self._discard(staged)
+        return document
+
+    def _store(self, upload: ValidatedDocument, title: str, uploaded_by: str) -> Document:
+        """Saves a validated file under a new key and records it as `processing`."""
         key = self._key_factory(upload.kind)
         try:
             self._storage.save(key, upload.stream, content_type=upload.content_type, size=upload.size)
         except StorageError as exc:
-            raise StorageUnavailable("The file store is unavailable. Please try again.") from exc
+            raise StorageUnavailable(_STORE_DOWN) from exc
 
         document = Document(
             title=title or self._title_from(upload.file_name),
@@ -123,6 +192,35 @@ class DocumentService:
         """The file name without its extension (the spec's default title)."""
         stem = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
         return (" ".join(stem.split()) or file_name)[:DOCUMENT_TITLE_MAX_LENGTH]
+
+    def _download(self, key: str) -> BinaryIO:
+        """The object's bytes in a seekable buffer (the validator needs to seek), reading at most
+        one byte past the size limit, so an oversized object fails the size check without being
+        read whole."""
+        limit = self._validator.max_file_size
+        try:
+            source = self._storage.open(key)
+        except StoredObjectNotFound as exc:
+            raise NotFound("The uploaded file wasn't found. It may have expired; upload it again.") from exc
+        except StorageError as exc:
+            raise StorageUnavailable(_STORE_DOWN) from exc
+
+        buffer = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+        try:
+            while buffer.tell() <= limit:
+                chunk = source.read(min(1024 * 1024, limit + 1 - buffer.tell()))
+                if not chunk:
+                    break
+                buffer.write(chunk)
+        except Exception as exc:
+            # A connection that drops mid-read (botocore raises several kinds of error for it).
+            buffer.close()
+            log.exception("Reading %s from storage failed", key)
+            raise StorageUnavailable(_STORE_DOWN) from exc
+        finally:
+            source.close()
+        buffer.seek(0)
+        return buffer
 
     def _discard(self, key: str) -> None:
         # Best effort: the database is already correct, so a failure only leaves an orphan behind.

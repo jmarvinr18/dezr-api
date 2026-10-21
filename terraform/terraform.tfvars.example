@@ -18,6 +18,10 @@ instance_type = "t4g.small"
 # Browser origins allowed to call the API directly (not needed when only dezr-ui's server calls it).
 # cors_origins = ["https://www.deszr.com"]
 
+# Pages allowed to upload documents straight to the bucket (dezr-ui's admin; defaults to the
+# Amplify site and http://localhost:3000). Add the site's own domain once it has one.
+# upload_origins = ["https://www.deszr.com", "https://main.d2c63rktpa3d5s.amplifyapp.com"]
+
 # Document vectors: Amazon Bedrock by default; "none" for keyword search only.
 # embedding_provider = "none"
 # embedding_region   = "us-east-1"

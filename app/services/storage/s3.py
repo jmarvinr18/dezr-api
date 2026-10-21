@@ -3,7 +3,7 @@ from typing import BinaryIO
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from app.services.storage.base import MediaStorage, StorageError, StoredObject, StoredObjectNotFound
+from app.services.storage.base import DirectUpload, MediaStorage, StorageError, StoredObject, StoredObjectNotFound
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +73,28 @@ class S3MediaStorage(MediaStorage):
         except BotoCoreError as exc:
             raise StorageError(f"Could not check {key} in S3.") from exc
         return True
+
+    def presign_upload(self, key: str, *, max_size: int, expires_in: int) -> DirectUpload:
+        """A presigned POST policy: S3 itself refuses anything empty, larger than max_size, for
+        another key, or sent after expires_in seconds. Signed with this process's credentials
+        (on EC2 the instance role's, which adds x-amz-security-token), so keep it short-lived."""
+        fields: dict[str, str] = {}
+        conditions: list = [["content-length-range", 1, max_size]]
+        if self._sse:
+            # Pre-filled fields must also appear as conditions, or S3 rejects the policy.
+            fields["x-amz-server-side-encryption"] = self._sse
+            conditions.append({"x-amz-server-side-encryption": self._sse})
+            if self._sse == "aws:kms" and self._kms_key_id:
+                fields["x-amz-server-side-encryption-aws-kms-key-id"] = self._kms_key_id
+                conditions.append({"x-amz-server-side-encryption-aws-kms-key-id": self._kms_key_id})
+        try:
+            post = self._client.generate_presigned_post(
+                self._bucket, self._object_key(key), Fields=fields, Conditions=conditions, ExpiresIn=expires_in
+            )
+        except (BotoCoreError, ClientError) as exc:
+            log.exception("Could not presign an upload for %s", key)
+            raise StorageError(f"Could not prepare an upload for {key}.") from exc
+        return DirectUpload(url=post["url"], fields=post["fields"])
 
     def delete(self, key: str) -> None:
         try:

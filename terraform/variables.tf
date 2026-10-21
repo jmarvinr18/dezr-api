@@ -81,6 +81,22 @@ variable "cors_origins" {
   default     = ["http://localhost:3000"]
 }
 
+variable "upload_origins" {
+  description = <<-EOT
+    Browser origins allowed to send documents straight to the bucket (dezr-ui's Admin >
+    Documents). Amplify Hosting refuses request bodies over about 4.5 MB, so the page uploads to
+    S3 with a presigned form the API signs for a signed-in admin; this CORS rule only lets those
+    pages make the request. An empty list removes the rule (uploads then go through the API).
+  EOT
+  type        = list(string)
+  default     = ["https://main.d2c63rktpa3d5s.amplifyapp.com", "http://localhost:3000"]
+
+  validation {
+    condition     = alltrue([for origin in var.upload_origins : can(regex("^https?://[^/]+$", origin))])
+    error_message = "Use origins without a path or trailing slash, e.g. \"https://www.deszr.com\"."
+  }
+}
+
 variable "trusted_proxy_count" {
   description = <<-EOT
     Proxies in front of the API that set X-Forwarded-For (TRUSTED_PROXY_COUNT). Keep 0 while the

@@ -9,16 +9,22 @@ def create_s3_client(config: dict):
     import boto3
     from botocore.config import Config as BotoConfig
 
+    endpoint_url = config.get("S3_ENDPOINT_URL") or None
     return boto3.client(
         "s3",
         region_name=config.get("S3_REGION") or None,
-        endpoint_url=config.get("S3_ENDPOINT_URL") or None,
+        endpoint_url=endpoint_url,
         # Fail fast when S3 is unreachable so uploads return 503 instead of hanging a worker.
         config=BotoConfig(
             retries={"max_attempts": 3, "mode": "standard"},
             connect_timeout=5,
             read_timeout=30,
             signature_version="s3v4",
+            # Presigned upload forms then point at the bucket's own regional host
+            # (bucket.s3.<region>.amazonaws.com). The default global host can answer a new
+            # bucket with a redirect, which a browser's cross-origin POST won't follow. Custom
+            # endpoints (moto, MinIO on localhost) keep path-style URLs.
+            s3={"addressing_style": "virtual"} if endpoint_url is None else None,
         ),
     )
 
