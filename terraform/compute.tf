@@ -39,26 +39,34 @@ locals {
   # and the instance never deploys.
   user_data = replace(templatefile("${path.module}/templates/user_data.sh.tftpl", {
     config = {
-      AWS_REGION               = var.aws_region
-      BUCKET                   = aws_s3_bucket.main.id
-      BUNDLE_KEY               = aws_s3_object.bundle.key
-      PARAM_PREFIX             = "/${var.name}"
-      PUBLIC_IP                = aws_eip.api.public_ip
-      DATA_VOLUME_ID           = aws_ebs_volume.data.id
-      CORS_ORIGINS             = join(",", var.cors_origins)
-      TRUSTED_PROXY_COUNT      = tostring(var.trusted_proxy_count)
-      MEDIA_PREFIX             = local.media_prefix
-      EMBEDDING_PROVIDER       = var.embedding_provider
-      EMBEDDING_MODEL_ID       = var.embedding_model_id
-      EMBEDDING_REGION         = local.embedding_region
-      ADMIN_EMAIL              = var.admin_email == null ? "" : var.admin_email
-      AI_AGENT_RUNTIME_ARN     = local.agent_runtime_arn == null ? "" : local.agent_runtime_arn
-      AI_AGENT_REGION          = local.agent_region
-      AI_REQUIRE_KEY           = var.ai_require_api_key ? "1" : "0"
-      AI_RATE_LIMIT_PER_MINUTE = tostring(var.ai_rate_limit_per_minute)
-      AI_DAILY_MESSAGE_LIMIT   = tostring(var.ai_daily_message_limit)
-      COMPOSE_VERSION          = "v2.29.7"
-      BUILDX_VERSION           = "v0.17.1"
+      AWS_REGION          = var.aws_region
+      BUCKET              = aws_s3_bucket.main.id
+      BUNDLE_KEY          = aws_s3_object.bundle.key
+      PARAM_PREFIX        = "/${var.name}"
+      PUBLIC_IP           = aws_eip.api.public_ip
+      DATA_VOLUME_ID      = aws_ebs_volume.data.id
+      CORS_ORIGINS        = join(",", var.cors_origins)
+      TRUSTED_PROXY_COUNT = tostring(var.trusted_proxy_count)
+      MEDIA_PREFIX        = local.media_prefix
+      EMBEDDING_PROVIDER  = var.embedding_provider
+      EMBEDDING_MODEL_ID  = var.embedding_model_id == null ? "" : var.embedding_model_id
+      EMBEDDING_REGION    = local.embedding_region
+      # A new key (a new parameter version) redeploys, since deploy.sh reads it at boot.
+      OPENAI_KEY_VERSION            = length(aws_ssm_parameter.openai_api_key) > 0 ? tostring(aws_ssm_parameter.openai_api_key[0].version) : ""
+      RETRIEVAL_BACKEND             = var.retrieval_backend
+      KNOWLEDGE_BASE_ID             = local.knowledge_base ? var.knowledge_base_id : ""
+      KNOWLEDGE_BASE_DATA_SOURCE_ID = local.knowledge_base ? var.knowledge_base_data_source_id : ""
+      KNOWLEDGE_BASE_S3_URI         = local.knowledge_base ? local.knowledge_base_s3_uri : ""
+      KNOWLEDGE_BASE_REGION         = local.knowledge_base_region
+      KNOWLEDGE_BASE_SEARCH_TYPE    = var.knowledge_base_search_type == null ? "" : var.knowledge_base_search_type
+      ADMIN_EMAIL                   = var.admin_email == null ? "" : var.admin_email
+      AI_AGENT_RUNTIME_ARN          = local.agent_runtime_arn == null ? "" : local.agent_runtime_arn
+      AI_AGENT_REGION               = local.agent_region
+      AI_REQUIRE_KEY                = var.ai_require_api_key ? "1" : "0"
+      AI_RATE_LIMIT_PER_MINUTE      = tostring(var.ai_rate_limit_per_minute)
+      AI_DAILY_MESSAGE_LIMIT        = tostring(var.ai_daily_message_limit)
+      COMPOSE_VERSION               = "v2.29.7"
+      BUILDX_VERSION                = "v0.17.1"
     }
     deploy_script = file("${path.module}/scripts/deploy.sh")
   }), "\r\n", "\n")
@@ -70,7 +78,7 @@ resource "aws_instance" "api" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.api.id]
   iam_instance_profile   = aws_iam_instance_profile.api.name
-  key_name               = var.ssh_key_name
+  key_name               = local.ssh_key_name
 
   user_data = local.user_data
   # New code, settings or deploy script → a fresh instance built from them.
@@ -95,6 +103,15 @@ resource "aws_instance" "api" {
   lifecycle {
     # A newer Amazon Linux image alone shouldn't replace a running server.
     ignore_changes = [ami]
+
+    precondition {
+      condition     = var.embedding_provider != "openai" || var.openai_api_key != null
+      error_message = "embedding_provider = \"openai\" needs openai_api_key (e.g. TF_VAR_openai_api_key=sk-... terraform apply), or choose another embedding_provider."
+    }
+    precondition {
+      condition     = !local.knowledge_base || (var.knowledge_base_id != null && var.knowledge_base_data_source_id != null)
+      error_message = "retrieval_backend = \"bedrock_kb\" needs knowledge_base_id and knowledge_base_data_source_id."
+    }
   }
 
   depends_on = [
@@ -106,6 +123,7 @@ resource "aws_instance" "api" {
     aws_ssm_parameter.secret_key,
     aws_ssm_parameter.document_search_key,
     aws_ssm_parameter.ai_api_key,
+    aws_ssm_parameter.openai_api_key,
   ]
 }
 

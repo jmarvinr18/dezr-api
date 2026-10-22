@@ -45,12 +45,13 @@ def aws():
         yield s3
 
 
-def make_app(tmp_path, embedder=None, **overrides):
+def make_app(tmp_path, embedder=None, knowledge_base=None, **overrides):
     """A migrated app on a fresh database, with files in the mocked S3 bucket and a fake
     embedding model. Documents are processed only when a test asks (INGESTION_MODE=worker)."""
     app = create_app(
         TEST_DATABASE_URL or "sqlite:///" + (tmp_path / "test.db").as_posix(),
         embedder=embedder or FakeEmbedder(),
+        knowledge_base=knowledge_base,
         config_overrides={
             "TESTING": True,
             "SECRET_KEY": "test-secret-key-that-is-long-enough",

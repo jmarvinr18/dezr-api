@@ -38,7 +38,7 @@ app/
     document_validator.py     PDF / .docx / .txt / .md by content, 25 MB, zip-bomb guard
     ingestion_service.py      the processing queue: claim (lease), parse, chunk, embed, store
     ingestion/                parsers/ (pdf, docx, markdown, plain_text) -> blocks; chunker.py (hybrid
-                              chunking); embeddings.py (Bedrock Titan / Cohere, or none); text.py
+                              chunking); embeddings.py (OpenAI, Bedrock Cohere / Titan, or none); text.py
     ai/                       the assistant's transcript and limits (chat_service.py) and the client
                               for the dezr-ai agent (agent_client.py); no prompts, models or tools
     storage/                  MediaStorage interface + S3 and local implementations
@@ -88,7 +88,7 @@ for switching dezr-ui over.
   `server/utils/cms.ts`), which strips scripts, event handlers and unsafe links.
 - **Media**: images (PNG, JPG, GIF, WebP) and PDFs up to 10 MB. The type is recognised from the
   file's first bytes, never its name; SVG and HTML are refused because they can carry scripts.
-  Files are published under a URL-safe name (`Partner Photo.JPG` â†’ `partner-photo.jpg`) and served
+  Files are published under a URL-safe name (`Partner Photo.JPG` → `partner-photo.jpg`) and served
   with `nosniff` and a sandboxing Content-Security-Policy.
 - **Contact enquiries** are stored for the firm to read in the admin area. Each visitor may send
   `CONTACT_RATE_LIMIT_PER_HOUR` (5) an hour; only a keyed hash of their IP is kept. Email delivery
@@ -113,8 +113,8 @@ and S3 deletes an upload nobody confirmed after a day (`terraform/storage.tf`). 
 (a renamed .exe is refused with 415; an old .doc is told to save as .docx). Scanned PDFs without a
 text layer fail with "The PDF has no readable text" (no OCR here).
 
-**Pipeline** (`services/ingestion_service.py`): read the file â†’ parse it into blocks (headings,
-paragraphs, lists, tables, code) â†’ hybrid chunking â†’ embed each passage with its context â†’ store
+**Pipeline** (`services/ingestion_service.py`): read the file → parse it into blocks (headings,
+paragraphs, lists, tables, code) → hybrid chunking → embed each passage with its context → store
 passages and vectors in `document_chunks` (pgvector).
 
 - **Parsing.** Word and Markdown say what their structure is (heading styles / `#`, list numbering,
@@ -133,14 +133,34 @@ passages and vectors in `document_chunks` (pgvector).
 
   Each passage keeps its heading path, page range, block types and token count. It is embedded
   as `title + heading path + text`, so short passages still carry their context.
-- **Embeddings:** Amazon Bedrock, Titan Text Embeddings V2 by default (1024 dimensions; Cohere
-  Embed Multilingual v3 also works), with the same AWS credentials as S3 plus
-  `bedrock:InvokeModel`. `EMBEDDING_PROVIDER=none` stores passages without vectors (keyword search
-  only); `flask documents reprocess --all` adds them later.
+- **Embeddings** (`EMBEDDING_PROVIDER`, `EMBEDDING_MODEL_ID`), every model at 1024 dimensions:
+  - `openai` (default): OpenAI's API with `OPENAI_API_KEY`, `text-embedding-3-small` by default
+    (or `text-embedding-3-large`). `OPENAI_BASE_URL` points it at another OpenAI-compatible
+    endpoint.
+  - `bedrock`: Amazon Bedrock with the same AWS credentials as S3 plus `bedrock:InvokeModel`.
+    Cohere Embed Multilingual v3 by default (in-Region in ap-southeast-1); Titan Text Embeddings
+    V2 works where Bedrock offers it, which isn't Singapore. Cohere is sold through AWS
+    Marketplace: call it once as an admin first (`terraform/README.md`, "Document embeddings").
+    Each text is clipped to Cohere's 2,048-character limit; the context comes first, and the
+    stored passage stays whole.
+  - `none`: passages without vectors (keyword search only).
+- **Switching models:** change the settings and restart. Each document records what it was
+  indexed with (`documents.embedding_model`), and search only compares vectors from the current
+  model. The worker re-indexes documents from another model when it starts (`REINDEX_ON_START`), as
+  does `flask documents reprocess --stale`; until then they're found by keywords. Documents that
+  failed because the embedding service was down are retried the same way.
+- **Or a Bedrock Knowledge Base** (`RETRIEVAL_BACKEND=bedrock_kb`): the knowledge base chunks
+  and embeds with its own model. The API copies each upload to the knowledge base's S3 data source
+  (`KNOWLEDGE_BASE_S3_URI`, named `<document id>.<ext>`), indexes that file directly
+  (IngestKnowledgeBaseDocuments, with the document's id and title as metadata) and waits for the
+  outcome; deleting removes it again. Search answers from its Retrieve API, keeping only documents
+  that still exist here, and falls back to keyword search when it's unreachable. Passages are
+  still chunked here for the admin's preview. The knowledge base itself is made outside the app.
 - **Retrieval-ready:** an HNSW index on the vectors (cosine) and a GIN full-text index on the text
   (`simple` config, since the site is in four languages), for hybrid search.
 - **Search for the assistant:** `POST /api/v1/documents/search` (key-protected,
-  `DOCUMENT_SEARCH_API_KEY`) merges the vector and keyword rankings with reciprocal rank fusion.
+  `DOCUMENT_SEARCH_API_KEY`) merges the vector and keyword rankings with reciprocal rank fusion,
+  or asks the knowledge base.
   dezr-ai's AgentCore runtime retrieves through it (see docs/api-integration.md).
 
 **Where processing runs** (`INGESTION_MODE`):
@@ -158,7 +178,9 @@ passages and vectors, and cancels processing that is still running.
 uv run flask documents list
 uv run flask documents process-pending        # once, e.g. from cron
 uv run flask documents worker                 # until stopped
-uv run flask documents reprocess --all        # after changing chunking or the embedding model
+uv run flask documents index                  # what documents are indexed with, and what's next
+uv run flask documents reprocess --stale      # after changing the embedding model or backend
+uv run flask documents reprocess --all        # after changing the chunking
 uv run flask documents reprocess --failed
 ```
 
@@ -166,9 +188,15 @@ uv run flask documents reprocess --failed
 | --- | --- | --- |
 | `INGESTION_MODE` | `thread` | `worker` when `flask documents worker` runs separately |
 | `CHUNK_MAX_TOKENS` / `CHUNK_MIN_TOKENS` / `CHUNK_OVERLAP_TOKENS` | `400` / `60` / `50` | Approximate tokens (no tokenizer download) |
-| `EMBEDDING_PROVIDER` | `bedrock` | or `none` |
-| `EMBEDDING_MODEL_ID` | `amazon.titan-embed-text-v2:0` | or `cohere.embed-multilingual-v3` |
-| `EMBEDDING_REGION` | `AWS_DEFAULT_REGION` | A region where the model is enabled |
+| `EMBEDDING_PROVIDER` | `openai` | `openai`, `bedrock` or `none` |
+| `EMBEDDING_MODEL_ID` | the provider's | `text-embedding-3-small` / `-large`; `cohere.embed-multilingual-v3` / `amazon.titan-embed-text-v2:0` (not in ap-southeast-1) |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | / `https://api.openai.com/v1` | |
+| `EMBEDDING_REGION` | `AWS_DEFAULT_REGION` | Bedrock: a region that offers the model |
+| `RETRIEVAL_BACKEND` | `pgvector` | or `bedrock_kb` |
+| `KNOWLEDGE_BASE_ID` / `KNOWLEDGE_BASE_DATA_SOURCE_ID` / `KNOWLEDGE_BASE_S3_URI` | | `bedrock_kb`: the knowledge base, its S3 data source and that source's `s3://bucket/prefix/` |
+| `KNOWLEDGE_BASE_REGION` / `KNOWLEDGE_BASE_SEARCH_TYPE` | `AWS_DEFAULT_REGION` / its default | `HYBRID` or `SEMANTIC` where the vector store supports it |
+| `KNOWLEDGE_BASE_WAIT_SECONDS` | `300` | How long processing waits for the index before marking the document ready anyway |
+| `REINDEX_ON_START` | `1` | The worker re-indexes documents from another model or backend when it starts |
 | `INGESTION_LEASE_MINUTES` / `INGESTION_MAX_ATTEMPTS` | `15` / `3` | |
 | `INGESTION_POLL_SECONDS` | `5` | Worker's wait when nothing is queued |
 
@@ -184,9 +212,9 @@ visitor's message, relays it to the agent, and stores the conversation. dezr-ui'
 and `/assistant` page) uses the same contract as vendor-portal-api's, so it works unchanged.
 
 ```
-dezr-ui â”€â”€POST /api/v1/ai/messages/streamâ”€â”€â–¶ dezr-api â”€â”€InvokeAgentRuntimeâ”€â”€â–¶ AgentCore â”€â”€â–¶ dezr-ai
-                                               â”‚ stores question + answer          â”‚ searches documents
-                                               â–¼                                   â–¼
+dezr-ui ──POST /api/v1/ai/messages/stream──▶ dezr-api ──InvokeAgentRuntime──▶ AgentCore ──▶ dezr-ai
+                                               │ stores question + answer          │ searches documents
+                                               ▼                                   ▼
                                        ai_sessions / ai_messages   POST /api/v1/documents/search (this API)
 ```
 
@@ -207,11 +235,11 @@ dezr-ui â”€â”€POST /api/v1/ai/messages/streamâ”€â”€â–¶ d
 
 | Setting | Default | |
 | --- | --- | --- |
-| `AI_AGENT_RUNTIME_ARN` | â€“ | dezr-ai's runtime (`arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>`). The AWS identity needs `bedrock-agentcore:InvokeAgentRuntime` on it. |
+| `AI_AGENT_RUNTIME_ARN` | – | dezr-ai's runtime (`arn:aws:bedrock-agentcore:<region>:<account>:runtime/<id>`). The AWS identity needs `bedrock-agentcore:InvokeAgentRuntime` on it. |
 | `AI_AGENT_REGION` | `AWS_DEFAULT_REGION` | |
-| `AI_AGENT_URL` | â€“ | Instead of AgentCore: dezr-ai over HTTP (`uv run python main.py` in dezr-ai â†’ `http://localhost:8080/invocations`; from Docker `http://host.docker.internal:8080/invocations`) |
+| `AI_AGENT_URL` | – | Instead of AgentCore: dezr-ai over HTTP (`uv run python main.py` in dezr-ai → `http://localhost:8080/invocations`; from Docker `http://host.docker.internal:8080/invocations`) |
 | `AI_AGENT_TIMEOUT_SECONDS` | `120` | Longest wait between two pieces of the answer |
-| `AI_API_KEY` | â€“ | Bearer key for the chat endpoints; unset leaves them open (development) |
+| `AI_API_KEY` | – | Bearer key for the chat endpoints; unset leaves them open (development) |
 | `AI_RATE_LIMIT_PER_MINUTE` / `AI_DAILY_MESSAGE_LIMIT` / `AI_MAX_MESSAGES_PER_SESSION` | `10` / `1000` / `100` | `0` turns a limit off |
 
 With neither `AI_AGENT_RUNTIME_ARN` nor `AI_AGENT_URL`, the chat endpoints answer 503 and the rest
@@ -266,7 +294,7 @@ from `X-Forwarded-For` rather than the Nuxt server's.
 
 | Setting | Default | |
 | --- | --- | --- |
-| `SECRET_KEY` | â€“ | Required in production (admin sign-in answers 503 without it). Random per process in debug. |
+| `SECRET_KEY` | – | Required in production (admin sign-in answers 503 without it). Random per process in debug. |
 | `ADMIN_SESSION_HOURS` | `8` | |
 | `ADMIN_MAX_FAILURES` / `ADMIN_LOCKOUT_MINUTES` | `5` / `15` | |
 | `TRUSTED_PROXY_COUNT` | `0` | Proxies in front that set `X-Forwarded-For`. Never more than really exist. |
@@ -286,11 +314,11 @@ Same design as vendor-portal-api's document storage:
 | Setting | Default | |
 | --- | --- | --- |
 | `STORAGE_BACKEND` | `s3` | `local` stores files on disk under `UPLOAD_FOLDER` (development only) |
-| `S3_BUCKET` | â€“ | Required for `s3` |
+| `S3_BUCKET` | – | Required for `s3` |
 | `S3_REGION` | `AWS_DEFAULT_REGION` | |
 | `S3_KEY_PREFIX` | `dezr` | |
 | `S3_SERVER_SIDE_ENCRYPTION` | `AES256` | `aws:kms` with `S3_KMS_KEY_ID`, or empty for the bucket default |
-| `S3_ENDPOINT_URL` | â€“ | Only for S3-compatible emulators |
+| `S3_ENDPOINT_URL` | – | Only for S3-compatible emulators |
 
 ## Tests
 

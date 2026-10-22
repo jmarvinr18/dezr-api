@@ -18,7 +18,9 @@ from app import model  # noqa: F401  (registers models with SQLAlchemy / Alembic
 migrate = Migrate()
 
 
-def create_app(db_url=None, config_overrides=None, media_storage=None, embedder=None, agent_client=None):
+def create_app(
+    db_url=None, config_overrides=None, media_storage=None, embedder=None, agent_client=None, knowledge_base=None
+):
 
     app = Flask(__name__)
     app.config.from_object(Config)
@@ -35,8 +37,11 @@ def create_app(db_url=None, config_overrides=None, media_storage=None, embedder=
     db.init_app(app)
     # S3 (or local disk in development) for uploaded media and documents.
     init_storage(app, media_storage)
-    # Embedding model and background processing for the assistant's documents.
-    init_ingestion(app, embedder)
+    # Embedding model, search index and background processing for the assistant's documents.
+    if knowledge_base is None:
+        init_ingestion(app, embedder)
+    else:
+        init_ingestion(app, embedder, knowledge_base)
     # The AI agent the chat endpoints relay to (dezr-ai on Bedrock AgentCore, or plain HTTP locally).
     init_ai(app, agent_client)
     # Signing key for admin access tokens.

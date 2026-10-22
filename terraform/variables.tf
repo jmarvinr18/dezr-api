@@ -63,16 +63,39 @@ variable "allowed_cidrs" {
   }
 }
 
-variable "ssh_key_name" {
-  description = "Name of an existing EC2 key pair for SSH. Leave null and use SSM Session Manager instead (no open port)."
+variable "ssh_public_key_path" {
+  description = <<-EOT
+    Turns on SSH: path to your OpenSSH public key (e.g. "~/.ssh/dezr-api-debug.pub"). Terraform
+    registers it as an EC2 key pair; the private key never leaves your machine. Log in as
+    ec2-user (see the ssh_command output). Changing the key replaces the instance, since EC2
+    only installs it at launch. Null (and no ssh_key_name) leaves SSH off; Session Manager
+    (the shell output) works either way.
+  EOT
   type        = string
   default     = null
 }
 
+variable "ssh_key_name" {
+  description = "Instead of ssh_public_key_path: the name of an EC2 key pair that already exists in this region."
+  type        = string
+  default     = null
+}
+
+variable "ssh_allow_my_ip" {
+  description = "With SSH on, open port 22 to the public IP that runs terraform apply (looked up at https://checkip.amazonaws.com on each run)."
+  type        = bool
+  default     = true
+}
+
 variable "ssh_cidrs" {
-  description = "IPv4 ranges allowed to SSH in (only with ssh_key_name)."
+  description = "More IPv4 ranges allowed to SSH in (with SSH on), e.g. a colleague's IP as \"203.0.113.10/32\"."
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = alltrue([for cidr in var.ssh_cidrs : can(cidrhost(cidr, 0)) && !strcontains(cidr, ":")])
+    error_message = "Use IPv4 CIDR blocks, e.g. 203.0.113.10/32."
+  }
 }
 
 variable "cors_origins" {
@@ -109,28 +132,101 @@ variable "trusted_proxy_count" {
 
 variable "embedding_provider" {
   description = <<-EOT
-    Vectors for uploaded documents: "bedrock" (Amazon Bedrock; the instance role gets
-    bedrock:InvokeModel on the model) or "none" (keyword search only). dezr-ai's semantic search
-    needs "bedrock". After switching, run `flask documents reprocess --all` on the instance to add
-    vectors to documents uploaded before.
+    Vectors for uploaded documents (with retrieval_backend = "pgvector"):
+    - "openai": OpenAI's embeddings API, with openai_api_key;
+    - "bedrock": Amazon Bedrock (the instance role gets bedrock:InvokeModel on the model);
+    - "none": keyword search only.
+    Change it (and embedding_model_id) whenever you like: apply redeploys, and the document
+    worker embeds the existing documents again with the new model when it starts.
   EOT
   type        = string
-  default     = "bedrock"
+  default     = "openai"
 
   validation {
-    condition     = contains(["none", "bedrock"], var.embedding_provider)
-    error_message = "Use \"none\" or \"bedrock\"."
+    condition     = contains(["openai", "bedrock", "none"], var.embedding_provider)
+    error_message = "Use \"openai\", \"bedrock\" or \"none\"."
   }
 }
 
 variable "embedding_model_id" {
-  description = "Bedrock model for document vectors (1024 dimensions)."
+  description = <<-EOT
+    Model for document vectors (asked for 1024 dimensions); null uses the provider's default.
+    - openai: "text-embedding-3-small" (default) or "text-embedding-3-large".
+    - bedrock: "cohere.embed-multilingual-v3" (default; in-Region in ap-southeast-1, sold through
+      AWS Marketplace: an admin must call it once before the instance role can, see README.md,
+      "Document embeddings") or "amazon.titan-embed-text-v2:0" (not offered in ap-southeast-1:
+      set embedding_region to a Region that has it).
+  EOT
   type        = string
-  default     = "amazon.titan-embed-text-v2:0"
+  default     = null
+}
+
+variable "openai_api_key" {
+  description = <<-EOT
+    OpenAI API key for embedding_provider = "openai". Stored as an SSM SecureString (it is also
+    in the Terraform state, like the other secrets). Pass it without writing it to a file:
+    TF_VAR_openai_api_key=sk-... terraform apply. Changing it redeploys.
+  EOT
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "retrieval_backend" {
+  description = <<-EOT
+    Where documents become searchable for the assistant:
+    - "pgvector": the instance's PostgreSQL (vectors from embedding_provider + full-text search);
+    - "bedrock_kb": an existing Bedrock Knowledge Base (knowledge_base_id), which chunks and
+      embeds with its own model. Uploads are copied to its S3 data source and indexed one by
+      one; dezr-ai's search goes through the API either way.
+    Switching redeploys, and the worker re-indexes the existing documents when it starts.
+  EOT
+  type        = string
+  default     = "pgvector"
+
+  validation {
+    condition     = contains(["pgvector", "bedrock_kb"], var.retrieval_backend)
+    error_message = "Use \"pgvector\" or \"bedrock_kb\"."
+  }
+}
+
+variable "knowledge_base_id" {
+  description = "The Bedrock Knowledge Base for retrieval_backend = \"bedrock_kb\" (e.g. \"ABCDEFGHIJ\")."
+  type        = string
+  default     = null
+}
+
+variable "knowledge_base_data_source_id" {
+  description = "Its S3 data source, which must read knowledge_base_s3_uri."
+  type        = string
+  default     = null
+}
+
+variable "knowledge_base_s3_uri" {
+  description = <<-EOT
+    Where the API copies documents for the knowledge base: the S3 data source's location,
+    "s3://bucket/prefix/". null uses this deployment's bucket, under knowledge-base/ (output
+    knowledge_base_s3_uri); point the data source there. Another bucket must allow the role
+    s3:PutObject and s3:DeleteObject.
+  EOT
+  type        = string
+  default     = null
+}
+
+variable "knowledge_base_region" {
+  description = "Region of the knowledge base; null uses aws_region."
+  type        = string
+  default     = null
+}
+
+variable "knowledge_base_search_type" {
+  description = "null for the knowledge base's default, or \"HYBRID\" / \"SEMANTIC\" if its vector store supports it."
+  type        = string
+  default     = null
 }
 
 variable "embedding_region" {
-  description = "Region to call Bedrock in; null uses aws_region. Pick one where the model is enabled for your account."
+  description = "Region to call Bedrock in; null uses aws_region. Pick one that offers embedding_model_id."
   type        = string
   default     = null
 }

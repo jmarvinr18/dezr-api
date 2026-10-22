@@ -146,7 +146,19 @@ def register_cli(app):
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_: stopping.append(True))
         poll = app.config["INGESTION_POLL_SECONDS"]
-        click.echo(f"Document worker started; checking every {poll:g}s.")
+        service = _ingestion()
+        click.echo(f"Document worker started; indexing with {service.index_id or 'no vectors'}, checking every {poll:g}s.")
+        if app.config["REINDEX_ON_START"]:
+            # After a change of embedding model or retrieval backend: bring every document over.
+            try:
+                queued = service.requeue_stale()
+                if queued:
+                    click.echo(f"Queued {queued} document(s) indexed with another model or backend.")
+            except Exception:
+                app.logger.exception("Queueing documents to re-index failed")
+                db.session.rollback()
+            finally:
+                db.session.remove()
         while not stopping:
             try:
                 processed = _ingestion().run_pending(limit=1)
@@ -168,12 +180,17 @@ def register_cli(app):
     @click.argument("document_id", type=click.UUID, required=False)
     @click.option("--all", "everything", is_flag=True, help="Every document (e.g. after changing the chunking or the embedding model).")
     @click.option("--failed", is_flag=True, help="Every failed document.")
-    def documents_reprocess(document_id, everything, failed):
+    @click.option("--stale", is_flag=True, help="Documents indexed with another embedding model or backend.")
+    def documents_reprocess(document_id, everything, failed, stale):
         """Chunk and embed documents again."""
         from app.model import Document
 
-        if not (document_id or everything or failed):
-            raise click.ClickException("Give a document id, --all or --failed.")
+        if not (document_id or everything or failed or stale):
+            raise click.ClickException("Give a document id, --all, --failed or --stale.")
+        if stale:
+            count = _ingestion().requeue_stale()
+            click.echo(f"Queued {count} document(s). They are processed by the worker, or run `flask documents process-pending`.")
+            return
         query = select(Document)
         if document_id:
             query = query.where(Document.id == document_id)
@@ -184,6 +201,26 @@ def register_cli(app):
         for document in rows:
             service.requeue(document)
         click.echo(f"Queued {len(rows)} document(s). They are processed by the worker, or run `flask documents process-pending`.")
+
+    @documents.command("index")
+    def documents_index():
+        """Show where documents are made searchable, and what each document is indexed with."""
+        from sqlalchemy import func
+
+        from app.model import Document
+
+        config = app.config
+        service = _ingestion()
+        click.echo(f"Retrieval backend: {config['RETRIEVAL_BACKEND']}")
+        click.echo(f"Embedding provider: {config['EMBEDDING_PROVIDER']}  model: {config['EMBEDDING_MODEL_ID'] or '(provider default)'}")
+        click.echo(f"New documents are indexed with: {service.index_id or 'no vectors (keyword search only)'}")
+        rows = db.session.execute(
+            select(Document.status, Document.embedding_model, func.count())
+            .group_by(Document.status, Document.embedding_model)
+            .order_by(Document.status, Document.embedding_model)
+        ).all()
+        for status, model, count in rows:
+            click.echo(f"  {count:>5}  {status:<10} {model or '-'}")
 
     @documents.command("list")
     def documents_list():

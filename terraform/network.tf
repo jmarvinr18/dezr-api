@@ -86,7 +86,7 @@ resource "aws_vpc_security_group_ingress_rule" "http" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "ssh" {
-  for_each = var.ssh_key_name == null ? toset([]) : toset(var.ssh_cidrs)
+  for_each = local.ssh_cidrs
 
   security_group_id = aws_security_group.api.id
   description       = "SSH"

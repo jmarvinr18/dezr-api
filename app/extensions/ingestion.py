@@ -22,10 +22,12 @@ from app.services.document_service import DocumentService
 from app.services.document_validator import DocumentValidator
 from app.services.ingestion import ChunkingOptions, Embedder, HybridChunker, build_embedder
 from app.services.ingestion_service import IngestionService
+from app.services.knowledge_base import BedrockKnowledgeBase, build_knowledge_base
 
 log = logging.getLogger(__name__)
 
 _EMBEDDER_KEY = "document_embedder"
+_KNOWLEDGE_BASE_KEY = "document_knowledge_base"
 _RUNNER_KEY = "ingestion_runner"
 
 
@@ -67,10 +69,18 @@ class ThreadRunner:
                 self._again = False
 
 
-def init_ingestion(app: Flask, embedder: Embedder | None = None) -> None:
-    """Creates the embedding model client once per app (pass one to override it in tests) and,
-    in thread mode, the background runner."""
+_NO_KNOWLEDGE_BASE = object()
+
+
+def init_ingestion(app: Flask, embedder: Embedder | None = None, knowledge_base=_NO_KNOWLEDGE_BASE) -> None:
+    """Creates the embedding model client and the search index (pgvector, or a Bedrock
+    Knowledge Base) once per app, from EMBEDDING_PROVIDER / EMBEDDING_MODEL_ID and
+    RETRIEVAL_BACKEND (pass them to override that in tests), and in thread mode the background
+    runner."""
     app.extensions[_EMBEDDER_KEY] = embedder or build_embedder(app.config)
+    app.extensions[_KNOWLEDGE_BASE_KEY] = (
+        build_knowledge_base(app.config) if knowledge_base is _NO_KNOWLEDGE_BASE else knowledge_base
+    )
     mode = (app.config.get("INGESTION_MODE") or "thread").lower()
     if mode not in ("thread", "worker"):
         raise RuntimeError(f"Unknown INGESTION_MODE '{mode}'. Use 'thread' or 'worker'.")
@@ -88,12 +98,18 @@ def kick_ingestion() -> None:
         runner.kick()
 
 
+def get_knowledge_base() -> BedrockKnowledgeBase | None:
+    return current_app.extensions.get(_KNOWLEDGE_BASE_KEY)
+
+
 def get_document_service() -> DocumentService:
-    return DocumentService(db.session, get_media_storage(), DocumentValidator(), on_uploaded=kick_ingestion)
+    return DocumentService(
+        db.session, get_media_storage(), DocumentValidator(), on_uploaded=kick_ingestion, knowledge_base=get_knowledge_base()
+    )
 
 
 def get_document_search_service() -> DocumentSearchService:
-    return DocumentSearchService(db.session, current_app.extensions[_EMBEDDER_KEY])
+    return DocumentSearchService(db.session, current_app.extensions[_EMBEDDER_KEY], get_knowledge_base())
 
 
 def get_ingestion_service() -> IngestionService:
@@ -111,4 +127,5 @@ def get_ingestion_service() -> IngestionService:
         ),
         lease_minutes=config["INGESTION_LEASE_MINUTES"],
         max_attempts=config["INGESTION_MAX_ATTEMPTS"],
+        knowledge_base=get_knowledge_base(),
     )

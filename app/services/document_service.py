@@ -54,12 +54,15 @@ class DocumentService:
         validator: DocumentValidator,
         on_uploaded: Callable[[], None] | None = None,
         key_factory: Callable[[str], str] = default_document_key,
+        knowledge_base=None,
     ):
         self._session = session
         self._storage = storage
         self._validator = validator
         self._on_uploaded = on_uploaded
         self._key_factory = key_factory
+        # RETRIEVAL_BACKEND=bedrock_kb: deleted documents leave the knowledge base too.
+        self._knowledge_base = knowledge_base
 
     def list_documents(self) -> list[Document]:
         return list(self._session.scalars(select(Document).order_by(Document.uploaded_at.desc())))
@@ -158,11 +161,13 @@ class DocumentService:
     def delete(self, document: Document) -> None:
         """Removes the file, its passages and their vectors. A document still processing is
         cancelled: the processor finds it gone and drops its work."""
-        key = document.storage_key
+        key, document_id, kind = document.storage_key, document.id, document.kind
         self._session.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
         self._session.delete(document)
         self._session.commit()
         self._discard(key)
+        if self._knowledge_base is not None:
+            self._knowledge_base.remove(document_id, kind)
 
     def chunks(self, document: Document, page: int, page_size: int) -> dict:
         total = self._session.scalar(

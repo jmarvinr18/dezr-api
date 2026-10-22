@@ -1,8 +1,9 @@
-"""Embedding models for the passages' vectors.
+"""Embedding models for the passages' vectors, chosen by EMBEDDING_PROVIDER (build_embedder).
 
-- `BedrockEmbedder`: Amazon Bedrock, Titan Text Embeddings V2 (default) or Cohere Embed v3.
-  Credentials come from the standard AWS chain, like S3; the IAM identity needs
-  bedrock:InvokeModel on the model.
+- `OpenAIEmbedder` (openai_embeddings.py): text-embedding-3-small/-large at 1024 dimensions.
+- `BedrockEmbedder`: Amazon Bedrock, Cohere Embed Multilingual v3 (default; in-Region in
+  ap-southeast-1) or Titan Text Embeddings V2 (not offered there). Credentials come from the
+  standard AWS chain, like S3; the IAM identity needs bedrock:InvokeModel on the model.
 - `NoEmbedder` (EMBEDDING_PROVIDER=none): passages are stored without vectors, so only keyword
   search can find them. `flask documents reprocess --all` adds vectors later.
 """
@@ -51,6 +52,10 @@ class BedrockEmbedder(Embedder):
     """
 
     COHERE_BATCH = 96
+    # Bedrock refuses a Cohere text longer than this ("truncate" only applies to its 512 tokens),
+    # which would fail the whole batch. A passage is embedded as title + headings + text, so the
+    # end is what gets cut; the stored passage stays whole.
+    COHERE_MAX_CHARS = 2048
 
     def __init__(self, client, model_id: str, dimensions: int = EMBEDDING_DIMENSIONS):
         self._client = client
@@ -71,7 +76,8 @@ class BedrockEmbedder(Embedder):
         if self._cohere:
             vectors = []
             for start in range(0, len(texts), self.COHERE_BATCH):
-                batch = texts[start:start + self.COHERE_BATCH]
+                batch = [text[: self.COHERE_MAX_CHARS] for text in texts[start:start + self.COHERE_BATCH]]
+                # No "embedding_types": with it, "embeddings" becomes {"float": [...]} instead of a list.
                 body = {"texts": batch, "input_type": input_type, "truncate": "END"}
                 vectors.extend(self._invoke(body)["embeddings"])
         else:
@@ -104,24 +110,45 @@ class BedrockEmbedder(Embedder):
             raise EmbeddingUnavailable(str(exc)) from exc
 
 
+# The model each provider uses when EMBEDDING_MODEL_ID is not set.
+DEFAULT_MODELS = {
+    "openai": "text-embedding-3-small",
+    "bedrock": "cohere.embed-multilingual-v3",
+}
+PROVIDERS = ("openai", "bedrock", "none")
+
+
 def build_embedder(config) -> Embedder:
-    provider = (config.get("EMBEDDING_PROVIDER") or "bedrock").lower()
+    """The embedding model EMBEDDING_PROVIDER and EMBEDDING_MODEL_ID name. Switching models
+    takes a restart; documents embedded with the old one are embedded again (see
+    IngestionService.requeue_stale), and until then search finds them by keywords."""
+    provider = (config.get("EMBEDDING_PROVIDER") or "openai").strip().lower()
+    if provider not in PROVIDERS:
+        raise RuntimeError(f"Unknown EMBEDDING_PROVIDER '{provider}'. Use one of: {', '.join(PROVIDERS)}.")
     if provider == "none":
         log.warning("EMBEDDING_PROVIDER=none: document passages are stored without vectors.")
         return NoEmbedder()
-    if provider == "bedrock":
-        region = config.get("EMBEDDING_REGION") or None
+    model_id = config.get("EMBEDDING_MODEL_ID") or DEFAULT_MODELS[provider]
+    if provider == "openai":
+        from app.services.ingestion.openai_embeddings import OpenAIEmbedder
 
-        def make_client():
-            import boto3
-            from botocore.config import Config as BotoConfig
+        return OpenAIEmbedder(
+            config.get("OPENAI_API_KEY"),
+            model_id,
+            base_url=config.get("OPENAI_BASE_URL"),
+            timeout=float(config.get("OPENAI_TIMEOUT_SECONDS") or 60),
+        )
+    region = config.get("EMBEDDING_REGION") or None
 
-            return boto3.client(
-                "bedrock-runtime",
-                region_name=region,
-                # Retries throttling with backoff; fail fast when Bedrock is unreachable.
-                config=BotoConfig(retries={"max_attempts": 5, "mode": "adaptive"}, connect_timeout=5, read_timeout=60),
-            )
+    def make_client():
+        import boto3
+        from botocore.config import Config as BotoConfig
 
-        return BedrockEmbedder(make_client, config["EMBEDDING_MODEL_ID"])
-    raise RuntimeError(f"Unknown EMBEDDING_PROVIDER '{provider}'. Use 'bedrock' or 'none'.")
+        return boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            # Retries throttling with backoff; fail fast when Bedrock is unreachable.
+            config=BotoConfig(retries={"max_attempts": 5, "mode": "adaptive"}, connect_timeout=5, read_timeout=60),
+        )
+
+    return BedrockEmbedder(make_client, model_id)

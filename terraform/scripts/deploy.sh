@@ -65,6 +65,8 @@ if [ ! -x "$PLUGINS/docker-buildx" ]; then
   chmod +x "$PLUGINS/docker-buildx"
 fi
 systemctl enable --now docker
+# Lets someone who SSHes in as ec2-user run docker / docker compose without sudo.
+usermod -aG docker ec2-user
 
 # ---------- 4. The PostgreSQL disk (kept across redeploys) ----------
 DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${DATA_VOLUME_ID//-/}"
@@ -113,6 +115,11 @@ AI_API_KEY=""
 if [ "$AI_REQUIRE_KEY" = "1" ]; then
   AI_API_KEY=$(param ai-api-key)
 fi
+# OpenAI key for the document embeddings, when they come from OpenAI.
+OPENAI_API_KEY=""
+if [ "$EMBEDDING_PROVIDER" = "openai" ]; then
+  OPENAI_API_KEY=$(param openai-api-key)
+fi
 # The default admin: created by the API container on start while there is no admin yet.
 ADMIN_PASSWORD=""
 if [ -n "$ADMIN_EMAIL" ]; then
@@ -137,6 +144,14 @@ S3_KEY_PREFIX=$MEDIA_PREFIX
 EMBEDDING_PROVIDER=$EMBEDDING_PROVIDER
 EMBEDDING_MODEL_ID=$EMBEDDING_MODEL_ID
 EMBEDDING_REGION=$EMBEDDING_REGION
+OPENAI_API_KEY=$OPENAI_API_KEY
+# Where documents become searchable: pgvector here, or a Bedrock Knowledge Base.
+RETRIEVAL_BACKEND=$RETRIEVAL_BACKEND
+KNOWLEDGE_BASE_ID=$KNOWLEDGE_BASE_ID
+KNOWLEDGE_BASE_DATA_SOURCE_ID=$KNOWLEDGE_BASE_DATA_SOURCE_ID
+KNOWLEDGE_BASE_S3_URI=$KNOWLEDGE_BASE_S3_URI
+KNOWLEDGE_BASE_REGION=$KNOWLEDGE_BASE_REGION
+KNOWLEDGE_BASE_SEARCH_TYPE=$KNOWLEDGE_BASE_SEARCH_TYPE
 DOCUMENT_SEARCH_API_KEY=$DOCUMENT_SEARCH_API_KEY
 # The AI assistant: dezr-ai's AgentCore runtime, reached with the instance role.
 AI_AGENT_RUNTIME_ARN=$AI_AGENT_RUNTIME_ARN

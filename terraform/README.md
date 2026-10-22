@@ -5,11 +5,11 @@ PostgreSQL with pgvector, the API on port 80, and the document worker. Apply ret
 answers `GET /healthz`, so it is usable straight away at the `api_url` output.
 
 ```
-Internet â”€â”€:80â”€â”€â–¶ Elastic IP â”€â”€â–¶ EC2 t4g.small (Amazon Linux 2023, Docker)
-                                   â”œâ”€ api      dezr-api, gunicorn, port 80
-                                   â”œâ”€ worker   flask documents worker (RAG ingestion)
-                                   â””â”€ db       pgvector/pgvector:pg17, 127.0.0.1 only
-                                        â””â”€ data on its own EBS volume (kept across redeploys)
+Internet ──:80──▶ Elastic IP ──▶ EC2 t4g.small (Amazon Linux 2023, Docker)
+                                   ├─ api      dezr-api, gunicorn, port 80
+                                   ├─ worker   flask documents worker (RAG ingestion)
+                                   └─ db       pgvector/pgvector:pg17, 127.0.0.1 only
+                                        └─ data on its own EBS volume (kept across redeploys)
                          S3 bucket: dezr/  uploaded media and documents
                                     deploy/ the app bundle the instance builds from
                          SSM Parameter Store: generated DB password, SECRET_KEY, admin password
@@ -20,12 +20,12 @@ Internet â”€â”€:80â”€â”€â–¶ Elastic IP â”€â”€�
 | Resource | Why |
 | --- | --- |
 | VPC, public subnet, internet gateway, route table | A network of its own (no NAT gateway, so nothing to pay for) |
-| Security group | Port 80 from `allowed_cidrs`; SSH only if you set `ssh_key_name`. PostgreSQL is never exposed. |
+| Security group | Port 80 from `allowed_cidrs`; port 22 only with SSH on (`ssh_public_key_path`), and only from your own IP. PostgreSQL is never exposed. |
 | EC2 instance (`t4g.small`, Graviton) | Docker host. Builds the API image on first boot from the uploaded bundle. |
 | EBS volume (gp3, 10 GiB, encrypted) | PostgreSQL's data, on its own disk so redeploys keep the database |
 | Elastic IP | A fixed address across redeploys |
 | S3 bucket (private, encrypted) | Media and document uploads (`STORAGE_BACKEND=s3`) and the app bundle. Admin > Documents uploads straight to it from the browser (`upload_origins`), since Amplify Hosting refuses request bodies over about 4.5 MB |
-| IAM role + instance profile | S3 access to that bucket, its SSM parameters, Session Manager, invoking the dezr-ai AgentCore runtime, and Bedrock embeddings when enabled. No access keys anywhere. |
+| IAM role + instance profile | S3 access to that bucket, its SSM parameters, Session Manager, invoking the dezr-ai AgentCore runtime, and Bedrock embeddings or the knowledge base when enabled. No access keys anywhere. |
 | SSM parameters (SecureString) | Generated PostgreSQL password, `SECRET_KEY`, the default admin's password, the document search key dezr-ai uses (`/dezr-api/document-search-key`), and the AI chat key dezr-ui sends (`/dezr-api/ai-api-key`). Kept out of user data. |
 
 ### Why `t4g.small`
@@ -60,7 +60,7 @@ terraform init
 terraform apply
 ```
 
-Apply takes about 6â€“10 minutes. Most of that is the instance installing Docker and building the
+Apply takes about 6–10 minutes. Most of that is the instance installing Docker and building the
 image, and apply waits for it. Then:
 
 ```bash
@@ -117,7 +117,7 @@ list of files (`app/**/*.py`, the seed pages, migrations, `pyproject.toml`, `uv.
 
 - **Code or settings changed:** `terraform apply` uploads a new bundle and **replaces the
   instance**. The old one is shut down cleanly first, and the new one builds and starts the stack
-  on the same Elastic IP. Expect about 5â€“8 minutes of downtime. The database (its own EBS volume)
+  on the same Elastic IP. Expect about 5–8 minutes of downtime. The database (its own EBS volume)
   and uploads (S3) carry over.
 - **Restart in place** (e.g. after editing `/opt/dezr/deploy.env` on the instance):
   `sudo /opt/dezr/deploy.sh`.
@@ -125,6 +125,31 @@ list of files (`app/**/*.py`, the seed pages, migrations, `pyproject.toml`, `uv.
   `terraform apply -replace=aws_instance.api` to move to it.
 
 ## Operating it
+
+### SSH
+
+SSH is off unless you turn it on. In `terraform.tfvars` (git-ignored):
+
+```hcl
+ssh_public_key_path = "~/.ssh/dezr-api-debug.pub"   # your public key; the private half stays with you
+```
+
+Make a key for it first if you don't have one: `ssh-keygen -t ed25519 -f ~/.ssh/dezr-api-debug`.
+Apply registers the key as an EC2 key pair and opens port 22 **only to the public IP running
+terraform apply** (`ssh_allow_my_ip`, looked up at checkip.amazonaws.com on every run). If your
+IP changes, run `terraform apply` again and only the firewall rule changes. Add colleagues' IPs
+with `ssh_cidrs`. EC2 installs the key at launch only, so turning SSH on, or changing the key,
+replaces the instance (the usual redeploy: the database and uploads carry over).
+
+```bash
+$(terraform output -raw ssh_command)                  # ssh -i ~/.ssh/dezr-api-debug ec2-user@<ip>
+```
+
+`ec2-user` is in the `docker` group, so `docker compose` works without `sudo`. Remove the line
+from `terraform.tfvars` and apply to close port 22 again. Session Manager (below) needs no open
+port and works either way.
+
+### Commands
 
 ```bash
 $(terraform output -raw shell)                        # shell via Session Manager
@@ -144,13 +169,77 @@ first while `snapshot_data_on_destroy = true` (default).
 
 ## Document embeddings
 
-`embedding_provider = "bedrock"` (default) embeds uploaded documents' passages with Titan Text
-Embeddings V2 in `embedding_region` (default: `aws_region`); the role gets `bedrock:InvokeModel`
-on that model. `embedding_provider = "none"` stores them without vectors, so they are found by
-keyword search only. Documents uploaded before vectors were turned on get them with:
+`embedding_provider` picks the model that embeds uploaded documents' passages, and you can change
+it whenever you like:
+
+| `embedding_provider` | `embedding_model_id` (null: the first) | Needs |
+| --- | --- | --- |
+| `"openai"` (default) | `text-embedding-3-small`, `text-embedding-3-large` | `openai_api_key` |
+| `"bedrock"` | `cohere.embed-multilingual-v3`, `amazon.titan-embed-text-v2:0` | Cohere: the Marketplace subscription below. Titan: an `embedding_region` that has it (not ap-southeast-1). The role gets `bedrock:InvokeModel` on the model only |
+| `"none"` | | Nothing: keyword search only |
+
+Give the OpenAI key without writing it to a file; Terraform stores it as the SSM SecureString
+`/<name>/openai-api-key`, and a new key redeploys:
 
 ```bash
-cd /opt/dezr/app && sudo docker compose exec api flask documents reprocess --all
+TF_VAR_openai_api_key=sk-... terraform apply
+```
+
+```powershell
+$env:TF_VAR_openai_api_key = "sk-..."; terraform apply
+```
+
+**Switching** (provider, model, or the knowledge base below) is a `terraform apply`: the instance
+is rebuilt with the new settings, and the document worker embeds the existing documents again
+when it starts, along with documents that failed because the old model was unavailable. Search
+finds a document by keywords until its turn comes. `terraform output embeddings` shows what is
+in use, and on the instance:
+
+```bash
+cd /opt/dezr/app && sudo docker compose exec api flask documents index
+```
+
+### A Bedrock Knowledge Base instead
+
+`retrieval_backend = "bedrock_kb"` hands chunking, embedding and search to an existing Bedrock
+Knowledge Base (make it in the console or with its own IaC; its embedding model is its own
+choice). Give it an **S3 data source** reading `terraform output knowledge_base_s3_uri`, which is
+this deployment's bucket under `knowledge-base/` unless you set `knowledge_base_s3_uri`, then:
+
+```hcl
+retrieval_backend             = "bedrock_kb"
+knowledge_base_id             = "ABCDEFGHIJ"
+knowledge_base_data_source_id = "KLMNOPQRST"
+```
+
+Each upload is copied there as `<document id>.<ext>` and indexed right away (no full sync), with
+the document's id and title as metadata; deleting a document removes it. dezr-ai keeps calling
+the API's search endpoint, which now asks the knowledge base. The role gets `s3:PutObject` /
+`s3:DeleteObject` on that prefix and `bedrock:IngestKnowledgeBaseDocuments`,
+`GetKnowledgeBaseDocuments`, `DeleteKnowledgeBaseDocuments` and `Retrieve` on the knowledge base.
+The knowledge base's own service role needs to read the bucket. Switching back to `"pgvector"`
+embeds the documents locally again.
+
+**Cohere's first use (once per AWS account).** Cohere is a third-party model sold through AWS
+Marketplace. Its first call subscribes the account and accepts Cohere's EULA, which needs
+`aws-marketplace:Subscribe`; the instance role deliberately doesn't have it, so until someone
+subscribes, every document fails with "The embedding service is unavailable". Before the first
+upload, call it once as an admin (or open it in the Bedrock console's playground) and wait for the
+availability to show `AVAILABLE` (up to 15 minutes):
+
+```bash
+aws bedrock-runtime invoke-model --region ap-southeast-1 --model-id cohere.embed-multilingual-v3 --cli-binary-format raw-in-base64-out --body '{"texts":["hello"],"input_type":"search_document"}' cohere-check.json
+```
+
+```bash
+aws bedrock get-foundation-model-availability --region ap-southeast-1 --model-id cohere.embed-multilingual-v3
+```
+
+To process documents again by hand (`--stale`: indexed with another model or backend; `--failed`;
+`--all`, e.g. after changing the chunking):
+
+```bash
+cd /opt/dezr/app && sudo docker compose exec api flask documents reprocess --stale
 ```
 
 ## Security notes
@@ -179,9 +268,14 @@ turned that off). The bucket is only deleted when it is empty, unless `force_des
   required file not found`:** the script had Windows (CRLF) line endings. Terraform now converts
   the user data and the app bundle to LF itself, and `tests/test_line_endings.py` fails on CRLF
   in the shell scripts, Dockerfile, compose file and templates.
-- **`Instance type â€¦ is not offered`:** pick another `instance_type` or `aws_region`.
-- **Documents stay `failed` with "The embedding service is unavailable":** the model isn't
-  enabled in `embedding_region`, or `embedding_provider` should be `none`.
+- **`Instance type … is not offered`:** pick another `instance_type` or `aws_region`.
+- **Documents stay `failed` with "The embedding service is unavailable":** `docker compose logs
+  worker` says why. OpenAI: a wrong key (401) or no credit (429 `insufficient_quota`). Bedrock: the
+  model isn't enabled in `embedding_region`, or Cohere's Marketplace subscription is missing.
+  Fix it, then `flask documents reprocess --failed` (or switch models: those are retried then).
+- **Documents fail with "The knowledge base couldn't index the document":** the reason that
+  follows is the knowledge base's own (unsupported content, a file too large for its parser, ...).
+  "The knowledge base is unavailable": check the role's permissions and the knowledge base id.
 
 ## Files
 
@@ -194,6 +288,7 @@ turned that off). The bucket is only deleted when it is empty, unless `force_des
 | `storage.tf` | S3 bucket (with the CORS rule for direct document uploads and a lifecycle rule that expires unconfirmed ones), the app bundle, generated secrets in SSM |
 | `compute.tf` | AMI, instance, data volume, Elastic IP, and the wait for `/healthz` |
 | `assistant.tf` | The smoke test: one question to the assistant after a (re)deploy |
+| `ssh.tf` | Optional SSH: your public key as an EC2 key pair, port 22 only from your own IP |
 | `outputs.tf` | URL, IP, shell command, admin password (sensitive) |
 | `templates/user_data.sh.tftpl` | First boot: writes the settings and runs the deploy script |
 | `scripts/deploy.sh` | Swap, Docker + Compose + Buildx, data volume, bundle, secrets (incl. the default admin), `docker compose up` |

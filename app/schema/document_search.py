@@ -23,16 +23,21 @@ class DocumentPassageSchema(Schema):
     """One passage of a ready document, with what's needed to cite it."""
 
     document_id = fields.UUID(data_key="documentId")
-    chunk_id = fields.UUID(data_key="chunkId", attribute="id")
+    chunk_id = fields.UUID(
+        data_key="chunkId", attribute="id", allow_none=True, metadata={"description": "null for knowledge base results"}
+    )
     title = fields.Str(metadata={"description": "The document's title"})
     file_name = fields.Str(data_key="fileName")
     heading_path = fields.List(fields.Str(), data_key="headingPath", metadata={"description": "Outermost first"})
     page_start = fields.Int(data_key="pageStart", allow_none=True, metadata={"description": "PDF only"})
     page_end = fields.Int(data_key="pageEnd", allow_none=True)
     content = fields.Str()
-    score = fields.Float(metadata={"description": "Reciprocal rank fusion score; higher is better"})
+    score = fields.Float(
+        allow_none=True,
+        metadata={"description": "Higher is better: reciprocal rank fusion, or the knowledge base's relevance"},
+    )
 
 
 class DocumentSearchResultSchema(Schema):
-    mode = fields.Str(metadata={"description": "hybrid (vectors and keywords) | keyword (no vectors available)"})
+    mode = fields.Str(metadata={"description": "hybrid (vectors and keywords) | keyword (no vectors available) | knowledge_base (Bedrock Knowledge Base)"})
     items = fields.List(fields.Nested(DocumentPassageSchema))

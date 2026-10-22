@@ -97,12 +97,42 @@ class Config:
     CHUNK_MAX_TOKENS = int(os.getenv("CHUNK_MAX_TOKENS", 400))
     CHUNK_MIN_TOKENS = int(os.getenv("CHUNK_MIN_TOKENS", 60))
     CHUNK_OVERLAP_TOKENS = int(os.getenv("CHUNK_OVERLAP_TOKENS", 50))
-    # Vectors for the passages: "bedrock" (Amazon Bedrock) or "none" (keyword search only).
-    # Credentials come from the same AWS chain as S3; the identity needs bedrock:InvokeModel.
-    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "bedrock")
-    # amazon.titan-embed-text-v2:0 or cohere.embed-multilingual-v3 (both 1024 dimensions).
-    EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
+    # Vectors for the passages (RETRIEVAL_BACKEND=pgvector), switchable at any time: change
+    # these and restart; documents embedded with another model are embedded again by the worker
+    # (or `flask documents reprocess --stale`), and until then search finds them by keywords.
+    # - "openai": OpenAI's API with OPENAI_API_KEY; model text-embedding-3-small (default) or
+    #   text-embedding-3-large.
+    # - "bedrock": Amazon Bedrock with the AWS credentials (bedrock:InvokeModel); model
+    #   cohere.embed-multilingual-v3 (default; needs the model's AWS Marketplace subscription)
+    #   or amazon.titan-embed-text-v2:0 (not in ap-southeast-1; set EMBEDDING_REGION).
+    # - "none": no vectors, keyword search only.
+    # Every model is asked for 1024 dimensions, the database column's size.
+    EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "openai")
+    # Empty: the provider's default model.
+    EMBEDDING_MODEL_ID = os.getenv("EMBEDDING_MODEL_ID") or None
     EMBEDDING_REGION = os.getenv("EMBEDDING_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    # Another OpenAI-compatible endpoint (Azure OpenAI, a proxy); empty for api.openai.com.
+    OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None
+    OPENAI_TIMEOUT_SECONDS = float(os.getenv("OPENAI_TIMEOUT_SECONDS", 60))
+    # Where documents become searchable:
+    # - "pgvector": this database (vectors from EMBEDDING_PROVIDER, plus full-text search).
+    # - "bedrock_kb": an existing Bedrock Knowledge Base, which chunks and embeds with its own
+    #   model. Files are copied to its S3 data source (KNOWLEDGE_BASE_S3_URI, s3://bucket/prefix/)
+    #   and indexed one by one; search uses its Retrieve API. Switching re-indexes the documents
+    #   like a model change does.
+    RETRIEVAL_BACKEND = os.getenv("RETRIEVAL_BACKEND", "pgvector")
+    KNOWLEDGE_BASE_ID = os.getenv("KNOWLEDGE_BASE_ID") or None
+    KNOWLEDGE_BASE_DATA_SOURCE_ID = os.getenv("KNOWLEDGE_BASE_DATA_SOURCE_ID") or None
+    KNOWLEDGE_BASE_S3_URI = os.getenv("KNOWLEDGE_BASE_S3_URI") or None
+    KNOWLEDGE_BASE_REGION = os.getenv("KNOWLEDGE_BASE_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    # How long processing waits for the knowledge base to index a file before marking the
+    # document ready anyway (it becomes searchable when the knowledge base finishes).
+    KNOWLEDGE_BASE_WAIT_SECONDS = float(os.getenv("KNOWLEDGE_BASE_WAIT_SECONDS", 300))
+    # Empty: the knowledge base's default. HYBRID or SEMANTIC, if its vector store supports it.
+    KNOWLEDGE_BASE_SEARCH_TYPE = os.getenv("KNOWLEDGE_BASE_SEARCH_TYPE") or None
+    # The worker re-indexes documents from another model or backend when it starts.
+    REINDEX_ON_START = os.getenv("REINDEX_ON_START", "1") == "1"
     # Bearer key for POST /api/v1/documents/search (the AI assistant's retrieval). Unset turns
     # the endpoint off (503). Use 32+ random characters; dezr-ai's runtime reads the same value.
     DOCUMENT_SEARCH_API_KEY = os.getenv("DOCUMENT_SEARCH_API_KEY")

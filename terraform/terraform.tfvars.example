@@ -22,13 +22,32 @@ instance_type = "t4g.small"
 # Amplify site and http://localhost:3000). Add the site's own domain once it has one.
 # upload_origins = ["https://www.deszr.com", "https://main.d2c63rktpa3d5s.amplifyapp.com"]
 
-# Document vectors: Amazon Bedrock by default; "none" for keyword search only.
+# Document vectors: OpenAI (text-embedding-3-small) by default. Give the key without writing it
+# to a file: TF_VAR_openai_api_key=sk-... terraform apply (PowerShell: $env:TF_VAR_openai_api_key="sk-...").
+# Switch whenever you like; apply redeploys and the worker re-embeds the existing documents.
+# embedding_model_id = "text-embedding-3-large"
+#
+# Amazon Bedrock instead (Cohere needs its AWS Marketplace subscription first; Titan Text
+# Embeddings V2 isn't offered in ap-southeast-1, so it needs another Region):
+# embedding_provider = "bedrock"
+# embedding_model_id = "cohere.embed-multilingual-v3"   # or "amazon.titan-embed-text-v2:0"
+# embedding_region   = "ap-northeast-1"
+#
+# Keyword search only:
 # embedding_provider = "none"
-# embedding_region   = "us-east-1"
 
-# SSH as well as Session Manager.
-# ssh_key_name = "my-key"
-# ssh_cidrs    = ["203.0.113.10/32"]
+# Search a Bedrock Knowledge Base instead of the instance's pgvector. Make the knowledge base
+# with an S3 data source reading `terraform output knowledge_base_s3_uri` (this bucket, under
+# knowledge-base/), or set knowledge_base_s3_uri to the data source's location.
+# retrieval_backend             = "bedrock_kb"
+# knowledge_base_id             = "ABCDEFGHIJ"
+# knowledge_base_data_source_id = "KLMNOPQRST"
+# knowledge_base_search_type    = "HYBRID"
+
+# SSH for debugging, as ec2-user (Session Manager works without it). Port 22 opens only to the
+# IP running terraform apply, plus ssh_cidrs. Make a key: ssh-keygen -t ed25519 -f ~/.ssh/dezr-api-debug
+# ssh_public_key_path = "~/.ssh/dezr-api-debug.pub"
+# ssh_cidrs           = ["203.0.113.10/32"]
 
 # The AI assistant: dezr-ai's AgentCore runtime (dezr-ai: terraform output agent_runtime_id).
 # agent_runtime_id         = "dezr_ai_agent-oWJlg6Fpai"

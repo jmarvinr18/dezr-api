@@ -40,9 +40,18 @@ services:
       MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-/media}
       # Documents for the AI assistant: the API stores uploads, the worker below processes them.
       INGESTION_MODE: worker
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-bedrock}
-      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      # Empty: the provider's default model.
+      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-}
       EMBEDDING_REGION: ${EMBEDDING_REGION:-ap-southeast-1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      RETRIEVAL_BACKEND: ${RETRIEVAL_BACKEND:-pgvector}
+      KNOWLEDGE_BASE_ID: ${KNOWLEDGE_BASE_ID:-}
+      KNOWLEDGE_BASE_DATA_SOURCE_ID: ${KNOWLEDGE_BASE_DATA_SOURCE_ID:-}
+      KNOWLEDGE_BASE_S3_URI: ${KNOWLEDGE_BASE_S3_URI:-}
+      KNOWLEDGE_BASE_REGION: ${KNOWLEDGE_BASE_REGION:-ap-southeast-1}
+      KNOWLEDGE_BASE_SEARCH_TYPE: ${KNOWLEDGE_BASE_SEARCH_TYPE:-}
       # Bearer key for POST /api/v1/documents/search (dezr-ai's retrieval); empty turns it off.
       DOCUMENT_SEARCH_API_KEY: ${DOCUMENT_SEARCH_API_KEY:-}
       # The AI assistant: POST /api/v1/ai/messages[/stream] relay to dezr-ai. The AgentCore
@@ -99,12 +108,24 @@ services:
       CREATE_DEFAULT_ADMIN: "0"
       INGESTION_MODE: worker
       INGESTION_POLL_SECONDS: ${INGESTION_POLL_SECONDS:-5}
+      # After a change of embedding model or retrieval backend, re-index the documents on start.
+      REINDEX_ON_START: ${REINDEX_ON_START:-1}
+      KNOWLEDGE_BASE_WAIT_SECONDS: ${KNOWLEDGE_BASE_WAIT_SECONDS:-300}
       CHUNK_MAX_TOKENS: ${CHUNK_MAX_TOKENS:-400}
       CHUNK_MIN_TOKENS: ${CHUNK_MIN_TOKENS:-60}
       CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-50}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-bedrock}
-      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-amazon.titan-embed-text-v2:0}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      # Empty: the provider's default model.
+      EMBEDDING_MODEL_ID: ${EMBEDDING_MODEL_ID:-}
       EMBEDDING_REGION: ${EMBEDDING_REGION:-ap-southeast-1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      RETRIEVAL_BACKEND: ${RETRIEVAL_BACKEND:-pgvector}
+      KNOWLEDGE_BASE_ID: ${KNOWLEDGE_BASE_ID:-}
+      KNOWLEDGE_BASE_DATA_SOURCE_ID: ${KNOWLEDGE_BASE_DATA_SOURCE_ID:-}
+      KNOWLEDGE_BASE_S3_URI: ${KNOWLEDGE_BASE_S3_URI:-}
+      KNOWLEDGE_BASE_REGION: ${KNOWLEDGE_BASE_REGION:-ap-southeast-1}
+      KNOWLEDGE_BASE_SEARCH_TYPE: ${KNOWLEDGE_BASE_SEARCH_TYPE:-}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
       S3_BUCKET: ${S3_BUCKET:-}
       S3_REGION: ${S3_REGION:-ap-southeast-1}

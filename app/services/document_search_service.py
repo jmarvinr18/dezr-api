@@ -6,16 +6,22 @@ Two rankings of the passages of `ready` documents, merged with reciprocal rank f
   different models aren't comparable;
 - keyword: full-text matches on the GIN index ('simple' config), for exact names and numbers the
   vectors can miss; passages with all the query's words rank before those with some.
-Without vectors (EMBEDDING_PROVIDER=none, or Bedrock unreachable) the keyword ranking answers
-alone. PostgreSQL only: SQLite (the default test database) has neither index.
+Without vectors (EMBEDDING_PROVIDER=none, or the embedding service unreachable) the keyword
+ranking answers alone. PostgreSQL only: SQLite (the default test database) has neither index.
+
+With RETRIEVAL_BACKEND=bedrock_kb the Bedrock Knowledge Base answers instead (mode
+"knowledge_base"), limited to documents that still exist here; when it can't be reached, the
+keyword ranking above does.
 """
 
 import logging
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
+from app.model import Document
 from app.services.errors import NotConfigured
 from app.services.ingestion import Embedder, EmbeddingUnavailable
+from app.services.knowledge_base import BedrockKnowledgeBase, KnowledgeBaseUnavailable
 
 log = logging.getLogger(__name__)
 
@@ -74,16 +80,50 @@ LIMIT :limit
 
 
 class DocumentSearchService:
-    def __init__(self, session, embedder: Embedder):
+    def __init__(self, session, embedder: Embedder, knowledge_base: BedrockKnowledgeBase | None = None):
         self._session = session
         self._embedder = embedder
+        self._knowledge_base = knowledge_base
 
     def search(self, query: str, limit: int) -> dict:
-        """The passages that best match the query, best first. `mode` says whether vectors
-        took part ("hybrid") or only keywords did ("keyword")."""
+        """The passages that best match the query, best first. `mode` says what answered:
+        vectors and keywords ("hybrid"), keywords only ("keyword"), or the knowledge base."""
+        if self._knowledge_base is not None:
+            try:
+                return {"mode": "knowledge_base", "items": self._from_knowledge_base(query, limit)}
+            except KnowledgeBaseUnavailable:
+                log.warning("Knowledge base search failed; searching by keywords only.")
+                return self._search_here(query, limit, use_vectors=False)
+        return self._search_here(query, limit)
+
+    def _from_knowledge_base(self, query: str, limit: int) -> list[dict]:
+        passages = [p for p in self._knowledge_base.retrieve(query, limit) if p.document_id and p.content]
+        ids = {p.document_id for p in passages}
+        documents = {
+            d.id: d
+            for d in self._session.scalars(select(Document).where(Document.id.in_(ids), Document.status == "ready"))
+        } if ids else {}
+        return [
+            {
+                "id": None,
+                "document_id": p.document_id,
+                "content": p.content,
+                "heading_path": [],
+                "page_start": p.page,
+                "page_end": p.page,
+                "title": documents[p.document_id].title,
+                "file_name": documents[p.document_id].file_name,
+                "score": p.score,
+            }
+            for p in passages
+            # Deleted here but still in the index (its removal failed, or is in progress).
+            if p.document_id in documents
+        ]
+
+    def _search_here(self, query: str, limit: int, use_vectors: bool = True) -> dict:
         if self._session.get_bind().dialect.name != "postgresql":
             raise NotConfigured("Document search needs PostgreSQL with pgvector.")
-        vector = self._query_vector(query)
+        vector = self._query_vector(query) if use_vectors else None
         rows = self._session.execute(
             SEARCH_SQL,
             {

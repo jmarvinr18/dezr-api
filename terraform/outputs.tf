@@ -30,6 +30,18 @@ output "agent_runtime_arn" {
   value       = local.agent_runtime_arn
 }
 
+output "embeddings" {
+  description = "What documents are made searchable with."
+  value = var.retrieval_backend == "bedrock_kb" ? "Bedrock Knowledge Base ${var.knowledge_base_id}" : (
+    var.embedding_provider == "none" ? "keyword search only" : "${var.embedding_provider} ${local.embedding_model_id}"
+  )
+}
+
+output "knowledge_base_s3_uri" {
+  description = "With retrieval_backend = \"bedrock_kb\": the S3 location the knowledge base's data source must read."
+  value       = local.knowledge_base ? local.knowledge_base_s3_uri : null
+}
+
 output "health_url" {
   value = local.health_url
 }
@@ -51,6 +63,15 @@ output "instance_id" {
 output "shell" {
   description = "Open a shell on the instance (needs the Session Manager plugin for the AWS CLI)."
   value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.api.id}"
+}
+
+output "ssh_command" {
+  description = "SSH in as ec2-user (only when SSH is on: ssh_public_key_path or ssh_key_name)."
+  value = !local.ssh_enabled ? null : (
+    local.ssh_identity != null
+    ? "ssh -i ${local.ssh_identity} ec2-user@${aws_eip.api.public_ip}"
+    : "ssh ec2-user@${aws_eip.api.public_ip}"
+  )
 }
 
 output "deploy_log" {

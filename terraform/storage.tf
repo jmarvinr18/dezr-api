@@ -182,6 +182,15 @@ resource "aws_ssm_parameter" "ai_api_key" {
   value       = random_password.ai_api_key[0].result
 }
 
+# OpenAI key for the document embeddings (embedding_provider = "openai").
+resource "aws_ssm_parameter" "openai_api_key" {
+  count       = var.embedding_provider == "openai" && var.openai_api_key != null ? 1 : 0
+  name        = "/${var.name}/openai-api-key"
+  description = "OPENAI_API_KEY of the dezr API (document embeddings)"
+  type        = "SecureString"
+  value       = var.openai_api_key
+}
+
 resource "aws_ssm_parameter" "admin_password" {
   count       = var.admin_email == null ? 0 : 1
   name        = "/${var.name}/admin-password"
