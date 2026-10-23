@@ -90,7 +90,7 @@ and contact-form limits count visitors, not the dezr-ui server.
 ### The AI assistant (dezr-ai)
 
 The API relays the chat to the dezr-ai agent's AgentCore runtime, `agent_runtime_id`
-(default `dezr_ai_agent-oWJlg6Fpai`, dezr-ai's `terraform output agent_runtime_id`, in the same
+(default `dezr_ai_agent-Rchwub39xj`, dezr-ai's `terraform output agent_runtime_id`, in the same
 account and in `agent_runtime_region`, default `aws_region`). Apply gives the instance role
 `bedrock-agentcore:InvokeAgentRuntime` on exactly that runtime, and then asks the assistant one
 question through the API (`ai_smoke_test`), so a finished apply means the API reaches the agent.

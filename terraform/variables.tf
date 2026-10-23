@@ -292,7 +292,7 @@ variable "agent_runtime_id" {
     invoke exactly this runtime. Null turns the assistant off (those endpoints answer 503).
   EOT
   type        = string
-  default     = "dezr_ai_agent-oWJlg6Fpai"
+  default     = "dezr_ai_agent-Rchwub39xj"
 }
 
 variable "agent_runtime_region" {

@@ -50,7 +50,7 @@ instance_type = "t4g.small"
 # ssh_cidrs           = ["203.0.113.10/32"]
 
 # The AI assistant: dezr-ai's AgentCore runtime (dezr-ai: terraform output agent_runtime_id).
-# agent_runtime_id         = "dezr_ai_agent-oWJlg6Fpai"
+# agent_runtime_id         = "dezr_ai_agent-Rchwub39xj"
 # ai_rate_limit_per_minute = 10
 # ai_daily_message_limit   = 1000
 # ai_smoke_test            = true
